@@ -1,0 +1,254 @@
+using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.EventSystems;
+
+public class ExhibitDetailPanel : MonoBehaviour, IPointerClickHandler
+{
+    private const float MaskAlpha = 0.6f;
+
+    // Fixed panel size (~30% width x 70% height of 1920x1080, matching parchment aspect)
+    private const float PanelWidth = 560f;
+    private const float PanelHeight = 640f;
+    private const float PanelPadding = 60f;
+    private const float ContentWidth = PanelWidth - PanelPadding * 2f;
+
+    // Auto-size mode (no background sprite)
+    private const float AutoImageMaxSize = 400f;
+    private const float AutoDescMaxWidth = 480f;
+    private const float AutoSpacing = 20f;
+
+    // Fixed panel spacing
+    private const float FixedSpacingImageToName = 28f;
+    private const float FixedSpacingNameToDesc = 18f;
+
+    private static ExhibitDetailPanel instance;
+
+    private Image maskImage;
+    private Image panelBackground;
+    private RectTransform contentRoot;
+    private VerticalLayoutGroup vlg;
+    private ContentSizeFitter fitter;
+    private Image exhibitImage;
+    private Text exhibitNameText;
+    private Text exhibitDescText;
+
+    private static ExhibitDetailPanel EnsureInstance()
+    {
+        if (instance != null) return instance;
+
+        var go = new GameObject("ExhibitDetailPanel");
+        DontDestroyOnLoad(go);
+        instance = go.AddComponent<ExhibitDetailPanel>();
+        instance.BuildUI();
+        instance.Close();
+        return instance;
+    }
+
+    private void BuildUI()
+    {
+        var canvas = gameObject.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        canvas.sortingOrder = 10000;
+
+        gameObject.AddComponent<CanvasScaler>();
+        gameObject.AddComponent<GraphicRaycaster>();
+
+        // Full-screen semi-transparent black mask (click to close)
+        maskImage = gameObject.AddComponent<Image>();
+        maskImage.color = new Color(0, 0, 0, MaskAlpha);
+        maskImage.raycastTarget = true;
+
+        var maskRT = (RectTransform)maskImage.transform;
+        maskRT.anchorMin = Vector2.zero;
+        maskRT.anchorMax = Vector2.one;
+        maskRT.offsetMin = Vector2.zero;
+        maskRT.offsetMax = Vector2.zero;
+
+        // Optional background panel (hidden by default)
+        var bgGo = new GameObject("PanelBackground");
+        bgGo.transform.SetParent(transform, false);
+        panelBackground = bgGo.AddComponent<Image>();
+        panelBackground.raycastTarget = false;
+        panelBackground.gameObject.SetActive(false);
+        var bgRT = (RectTransform)bgGo.transform;
+        bgRT.anchorMin = new Vector2(0.5f, 0.5f);
+        bgRT.anchorMax = new Vector2(0.5f, 0.5f);
+        bgRT.pivot = new Vector2(0.5f, 0.5f);
+        bgRT.anchoredPosition = Vector2.zero;
+
+        // Content root — centered
+        contentRoot = new GameObject("Content").AddComponent<RectTransform>();
+        contentRoot.SetParent(transform, false);
+        contentRoot.anchorMin = new Vector2(0.5f, 0.5f);
+        contentRoot.anchorMax = new Vector2(0.5f, 0.5f);
+        contentRoot.pivot = new Vector2(0.5f, 0.5f);
+        contentRoot.anchoredPosition = Vector2.zero;
+
+        vlg = contentRoot.gameObject.AddComponent<VerticalLayoutGroup>();
+        vlg.childAlignment = TextAnchor.UpperCenter;
+        vlg.spacing = AutoSpacing;
+        vlg.padding = new RectOffset(
+            (int)PanelPadding, (int)PanelPadding,
+            (int)PanelPadding, (int)PanelPadding);
+        vlg.childControlWidth = true;
+        vlg.childControlHeight = true;
+        vlg.childForceExpandWidth = false;
+        vlg.childForceExpandHeight = false;
+
+        fitter = contentRoot.gameObject.AddComponent<ContentSizeFitter>();
+        fitter.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
+        fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+        // Exhibit image
+        var imgGo = new GameObject("ExhibitImage");
+        imgGo.transform.SetParent(contentRoot, false);
+        exhibitImage = imgGo.AddComponent<Image>();
+        exhibitImage.preserveAspect = true;
+        exhibitImage.raycastTarget = false;
+        var imgLayout = imgGo.AddComponent<LayoutElement>();
+        imgLayout.preferredWidth = AutoImageMaxSize;
+        imgLayout.preferredHeight = AutoImageMaxSize;
+        imgLayout.flexibleWidth = 0;
+        imgLayout.flexibleHeight = 0;
+
+        // Name text
+        var nameGo = new GameObject("ExhibitName");
+        nameGo.transform.SetParent(contentRoot, false);
+        exhibitNameText = nameGo.AddComponent<Text>();
+        exhibitNameText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        exhibitNameText.fontSize = 36;
+        exhibitNameText.fontStyle = FontStyle.Bold;
+        exhibitNameText.alignment = TextAnchor.MiddleCenter;
+        exhibitNameText.color = new Color(0.2f, 0.12f, 0.06f);
+        exhibitNameText.raycastTarget = false;
+        exhibitNameText.horizontalOverflow = HorizontalWrapMode.Wrap;
+        exhibitNameText.verticalOverflow = VerticalWrapMode.Overflow;
+        var nameLayout = nameGo.AddComponent<LayoutElement>();
+        nameLayout.preferredWidth = AutoDescMaxWidth;
+        nameLayout.flexibleWidth = 0;
+        nameLayout.minHeight = 0;
+
+        // Description text
+        var descGo = new GameObject("ExhibitDesc");
+        descGo.transform.SetParent(contentRoot, false);
+        exhibitDescText = descGo.AddComponent<Text>();
+        exhibitDescText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        exhibitDescText.fontSize = 24;
+        exhibitDescText.alignment = TextAnchor.MiddleCenter;
+        exhibitDescText.color = new Color(0.15f, 0.1f, 0.05f);
+        exhibitDescText.lineSpacing = 1.2f;
+        exhibitDescText.raycastTarget = false;
+        exhibitDescText.horizontalOverflow = HorizontalWrapMode.Wrap;
+        exhibitDescText.verticalOverflow = VerticalWrapMode.Overflow;
+        var descLayout = descGo.AddComponent<LayoutElement>();
+        descLayout.preferredWidth = AutoDescMaxWidth;
+        descLayout.flexibleWidth = 0;
+        descLayout.minHeight = 0;
+    }
+
+    public static void Show(ExhibitData data)
+    {
+        Show(data, null);
+    }
+
+    public static void Show(ExhibitData data, Sprite backgroundSprite)
+    {
+        if (data == null) return;
+
+        var panel = EnsureInstance();
+        panel.ShowInternal(data, backgroundSprite);
+    }
+
+    private void ShowInternal(ExhibitData data, Sprite backgroundSprite)
+    {
+        bool useFixedPanel = backgroundSprite != null;
+
+        // Configure background
+        if (useFixedPanel)
+        {
+            panelBackground.sprite = backgroundSprite;
+            panelBackground.color = Color.white;
+            panelBackground.type = Image.Type.Sliced;
+            panelBackground.gameObject.SetActive(true);
+
+            var bgRT = (RectTransform)panelBackground.transform;
+            bgRT.sizeDelta = new Vector2(PanelWidth, PanelHeight);
+
+            // Fixed-size content root matching panel
+            contentRoot.sizeDelta = new Vector2(PanelWidth, PanelHeight);
+            fitter.enabled = false;
+            vlg.childForceExpandHeight = true;
+            vlg.padding = new RectOffset(
+                (int)PanelPadding, (int)PanelPadding,
+                (int)PanelPadding, (int)PanelPadding);
+        }
+        else
+        {
+            panelBackground.gameObject.SetActive(false);
+            fitter.enabled = true;
+            vlg.childForceExpandHeight = false;
+            vlg.padding = new RectOffset(
+                (int)PanelPadding, (int)PanelPadding,
+                (int)PanelPadding, (int)PanelPadding);
+        }
+
+        // Image
+        if (data.icon != null)
+        {
+            exhibitImage.sprite = data.icon;
+            exhibitImage.color = data.color;
+            exhibitImage.gameObject.SetActive(true);
+
+            float maxImg = useFixedPanel ? ContentWidth : AutoImageMaxSize;
+            float spriteW = data.icon.rect.width;
+            float spriteH = data.icon.rect.height;
+            float scale = Mathf.Min(maxImg / spriteW, maxImg / spriteH, 1f);
+            float w = spriteW * scale;
+            float h = spriteH * scale;
+
+            var imgLayout = exhibitImage.GetComponent<LayoutElement>();
+            imgLayout.preferredWidth = w;
+            imgLayout.preferredHeight = h;
+        }
+        else
+        {
+            exhibitImage.gameObject.SetActive(false);
+        }
+
+        // Texts
+        exhibitNameText.text = data.name;
+        exhibitDescText.text = string.IsNullOrEmpty(data.description) ? "" : data.description;
+
+        // Constrain text widths to panel content area
+        float textWidth = useFixedPanel ? ContentWidth : AutoDescMaxWidth;
+        exhibitNameText.GetComponent<LayoutElement>().preferredWidth = textWidth;
+        exhibitDescText.GetComponent<LayoutElement>().preferredWidth = textWidth;
+
+        // Apply different font styles based on mode
+        if (useFixedPanel)
+        {
+            vlg.spacing = FixedSpacingImageToName;
+            exhibitNameText.color = new Color(0.2f, 0.12f, 0.06f);
+            exhibitDescText.color = new Color(0.15f, 0.1f, 0.05f);
+        }
+        else
+        {
+            vlg.spacing = AutoSpacing;
+            exhibitNameText.color = Color.white;
+            exhibitDescText.color = new Color(0.85f, 0.85f, 0.85f);
+        }
+
+        LayoutRebuilder.ForceRebuildLayoutImmediate(contentRoot);
+        gameObject.SetActive(true);
+    }
+
+    public void Close()
+    {
+        gameObject.SetActive(false);
+    }
+
+    public void OnPointerClick(PointerEventData eventData)
+    {
+        Close();
+    }
+}

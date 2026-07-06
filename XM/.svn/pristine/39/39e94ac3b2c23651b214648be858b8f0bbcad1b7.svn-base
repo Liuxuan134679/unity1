@@ -1,0 +1,736 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.EventSystems;
+
+/// <summary>
+/// 雷达视图地图游戏：主角用连续世界坐标移动/旋转，物资点和采集范围根据主角位置与角度反向投影到雷达上。
+/// UI层级和雷达图形由场景直接保存；运行时只刷新状态、扫描角度和资源点回波。
+/// </summary>
+public class MapGridGame : MonoBehaviour
+{
+    // ────────────── 配置 ──────────────
+    [Header("地图配置")]
+    [Tooltip("地图宽度（世界单位）")]
+    public int mapWidth = 24;
+    [Tooltip("地图高度（世界单位）")]
+    public int mapHeight = 24;
+    [Tooltip("物资点最少数量")]
+    public int minMaterials = 5;
+    [Tooltip("物资点最多数量")]
+    public int maxMaterials = 15;
+    [Tooltip("物资点最小间距")]
+    public float minSpawnDistance = 3f;
+
+    [Header("驾驶配置")]
+    [Tooltip("移动速度（世界单位/秒）")]
+    public float moveSpeed = 2.5f;
+    [Tooltip("转向速度（度/秒）")]
+    public float turnSpeed = 120f;
+
+    [Header("雷达配置")]
+    [Tooltip("雷达直径（像素）")]
+    public float radarSize = 600f;
+    [Tooltip("物资点直径（像素）")]
+    public float dotSize = 16f;
+    [Tooltip("扫描线旋转速度（度/秒）")]
+    public float scanSpeed = 60f;
+    [Tooltip("扫描扇形角度（度）")]
+    public float scanSweepAngle = 55f;
+    [Tooltip("回波渐隐速度")]
+    public float echoFadeOutSpeed = 2.5f;
+
+    [Header("UI引用 - 雷达")]
+    [SerializeField] private RectTransform radarRoot;
+    [SerializeField] private Image radarBgImage;
+    [SerializeField] private Image outerRingImage;
+    [SerializeField] private Image[] innerRingImages;
+    [SerializeField] private RectTransform scanLine;
+    [SerializeField] private Image scanImage;
+    [SerializeField] private Transform dotsParent;
+    [SerializeField] private Image playerMarkerImage;
+
+    [Header("UI引用 - 信息栏")]
+    [SerializeField] private Text positionText;
+    [SerializeField] private Text inventoryText;
+
+    [Header("UI引用 - 控制按钮")]
+    [SerializeField] private Button forwardButton;
+    [SerializeField] private Button backwardButton;
+    [SerializeField] private Button leftButton;
+    [SerializeField] private Button rightButton;
+    [SerializeField] private Button drillButton;
+    [SerializeField] private Text drillBtnText;
+
+    [Header("UI引用 - 钻探面板")]
+    [SerializeField] private GameObject drillPanel;
+    [SerializeField] private DrillController drillController;
+
+    [Header("UI引用 - 倒计时")]
+    [SerializeField] private Text countdownText;
+    [SerializeField] private SceneLoaderButton sceneLoaderButton;
+
+    [Header("驾驶音效")]
+    [SerializeField] private AudioClip engineIdleClip;
+    [SerializeField] private AudioClip[] throttleClips;
+    [SerializeField] private AudioClip drivingClip;
+
+    // ────────────── 物资定义 ──────────────
+    // ID=0 表示空地；1~6 为不同物资
+    private static readonly string[] MaterialNames =
+        { "", "铁矿", "铜矿", "金矿", "钻石", "石油", "煤炭" };
+
+    private static readonly Color[] MaterialDotColors =
+    {
+        Color.clear,                      // 0 空（不使用）
+        new Color(0.72f, 0.50f, 0.28f),  // 1 铁矿 棕色
+        new Color(0.95f, 0.55f, 0.18f),  // 2 铜矿 橙色
+        new Color(1.00f, 0.85f, 0.10f),  // 3 金矿 黄色
+        new Color(0.10f, 0.88f, 0.92f),  // 4 钻石 青色
+        new Color(0.75f, 0.18f, 0.18f),  // 5 石油 深红
+        new Color(0.42f, 0.42f, 0.42f),  // 6 煤炭 深灰
+    };
+
+    // ────────────── 资源节点 ──────────────
+    private class ResourceNode
+    {
+        public Vector2 worldPos;
+        public int materialId;
+        public float collectRadius;
+        public bool collected;
+        public Image dotImage;
+        public Image rangeImage;
+        public RectTransform dotRt;
+        public RectTransform rangeRt;
+        public float echoAlpha;
+    }
+    private readonly List<ResourceNode> _resources = new List<ResourceNode>();
+    private ResourceNode _currentResource;
+
+    // ────────────── 玩家状态 ──────────────
+    private Vector2 _playerWorldPos;
+    private float _playerAngle; // 0度表示朝上
+
+    // ────────────── 长按输入状态 ──────────────
+    private bool _holdForward;
+    private bool _holdBackward;
+    private bool _holdLeft;
+    private bool _holdRight;
+
+    // ────────────── 驾驶音效状态 ──────────────
+    private AudioSource _driveLoopSource;
+    private AudioSource _driveOneShotSource;
+    private int _moveButtonHoldCount;
+    private Coroutine _throttleCoroutine;
+
+    private bool _isDrilling;
+    private bool _drillEnded;
+    private float _countdownTimer = 300f;
+    private bool _countdownFinished;
+
+    private readonly Dictionary<int, int> _inventory = new Dictionary<int, int>();
+
+    // ────────────── 雷达状态 ──────────────
+    private float _scanAngle;
+    private float _radarScale;
+    private float _radarRadius;
+    private Sprite _circleSprite;
+    private Sprite _ringSprite;
+
+    // ────────────── 生命周期 ──────────────
+    private void Start()
+    {
+        GenerateMap();
+        CacheRadarReferences();
+        SetupButtons();
+        SetupDriveAudio();
+        BindResourceDots();
+        RefreshDisplay();
+    }
+
+    private void Update()
+    {
+        _scanAngle = Mathf.Repeat(_scanAngle - scanSpeed * Time.deltaTime, 360f);
+        if (scanLine != null)
+            scanLine.localEulerAngles = new Vector3(0f, 0f, _scanAngle);
+
+        if (_holdLeft)
+            _playerAngle -= turnSpeed * Time.deltaTime;
+        if (_holdRight)
+            _playerAngle += turnSpeed * Time.deltaTime;
+
+        Vector2 forward = GetForward(_playerAngle);
+
+        if (_holdForward)
+            _playerWorldPos += forward * moveSpeed * Time.deltaTime;
+        if (_holdBackward)
+            _playerWorldPos -= forward * moveSpeed * Time.deltaTime;
+
+        _playerWorldPos.x = Mathf.Clamp(_playerWorldPos.x, -mapWidth * 0.5f, mapWidth * 0.5f);
+        _playerWorldPos.y = Mathf.Clamp(_playerWorldPos.y, -mapHeight * 0.5f, mapHeight * 0.5f);
+
+        RefreshDisplay();
+        UpdateCountdown();
+    }
+
+    private void UpdateCountdown()
+    {
+        if (_countdownFinished) return;
+
+        _countdownTimer -= Time.deltaTime;
+
+        if (_countdownTimer <= 0f)
+        {
+            _countdownTimer = 0f;
+            _countdownFinished = true;
+            if (countdownText)
+                countdownText.text = "00:00";
+            SwitchScene();
+            return;
+        }
+
+        if (countdownText)
+        {
+            int minutes = Mathf.FloorToInt(_countdownTimer / 60f);
+            int seconds = Mathf.FloorToInt(_countdownTimer % 60f);
+            countdownText.text = $"{minutes:00}:{seconds:00}";
+        }
+    }
+
+    private static Vector2 GetForward(float angle)
+    {
+        float rad = angle * Mathf.Deg2Rad;
+        return new Vector2(Mathf.Sin(rad), Mathf.Cos(rad));
+    }
+
+    // ────────────── 地图生成 ──────────────
+    private void GenerateMap()
+    {
+        _playerWorldPos = Vector2.zero;
+        _playerAngle = 0f;
+
+        int targetCount = Random.Range(minMaterials, maxMaterials + 1);
+        int maxAttempts = targetCount * 30;
+        float halfWidth = mapWidth * 0.5f;
+        float halfHeight = mapHeight * 0.5f;
+
+        for (int i = 0; i < targetCount; i++)
+        {
+            Vector2 pos = Vector2.zero;
+            bool found = false;
+
+            for (int attempt = 0; attempt < maxAttempts; attempt++)
+            {
+                pos = new Vector2(
+                    Random.Range(-halfWidth, halfWidth),
+                    Random.Range(-halfHeight, halfHeight)
+                );
+
+                bool tooClose = false;
+                foreach (var existing in _resources)
+                {
+                    if (Vector2.Distance(pos, existing.worldPos) < minSpawnDistance)
+                    {
+                        tooClose = true;
+                        break;
+                    }
+                }
+
+                if (!tooClose)
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+                continue;
+
+            var node = new ResourceNode
+            {
+                worldPos = pos,
+                materialId = Random.Range(1, MaterialNames.Length),
+                collectRadius = 1.0f,
+                collected = false
+            };
+            _resources.Add(node);
+        }
+    }
+
+    // ────────────── UI初始化 ──────────────
+    private void CacheRadarReferences()
+    {
+        _radarRadius = radarSize / 2f;
+        _radarScale = (_radarRadius - dotSize * 0.5f) / 6f;
+
+        if (!HasRadarReferences())
+        {
+            Debug.LogError("MapGridGame 雷达引用不完整。请在场景层级中绑定 RadarRoot、RadarBackground、OuterRing、InnerRing、ScanLine、RadarDots 和 PlayerMarker。", this);
+            return;
+        }
+
+        _circleSprite = radarBgImage.sprite;
+        _ringSprite = outerRingImage.sprite;
+    }
+
+    private bool HasRadarReferences()
+    {
+        return radarRoot != null &&
+               radarBgImage != null &&
+               outerRingImage != null &&
+               innerRingImages != null &&
+               innerRingImages.Length > 0 &&
+               scanLine != null &&
+               scanImage != null &&
+               dotsParent != null &&
+               playerMarkerImage != null;
+    }
+
+    private void SetupButtons()
+    {
+        SetupHoldButton(forwardButton,
+            () => { if (_isDrilling) return; _holdForward = true; OnMoveButtonDown(); },
+            () => { _holdForward = false; OnMoveButtonUp(); });
+        SetupHoldButton(backwardButton,
+            () => { if (_isDrilling) return; _holdBackward = true; OnMoveButtonDown(); },
+            () => { _holdBackward = false; OnMoveButtonUp(); });
+        SetupHoldButton(leftButton,
+            () => { if (_isDrilling) return; _holdLeft = true; OnMoveButtonDown(); },
+            () => { _holdLeft = false; OnMoveButtonUp(); });
+        SetupHoldButton(rightButton,
+            () => { if (_isDrilling) return; _holdRight = true; OnMoveButtonDown(); },
+            () => { _holdRight = false; OnMoveButtonUp(); });
+
+        SetupHoldButton(drillButton,
+            HandleDrillButtonDown,
+            HandleDrillButtonUp);
+    }
+
+    private void SetupHoldButton(Button btn, System.Action onDown, System.Action onUp)
+    {
+        if (btn == null) return;
+
+        var trigger = btn.GetComponent<EventTrigger>();
+        if (trigger == null)
+            trigger = btn.gameObject.AddComponent<EventTrigger>();
+
+        var down = new EventTrigger.Entry { eventID = EventTriggerType.PointerDown };
+        down.callback.AddListener(_ => onDown());
+
+        var up = new EventTrigger.Entry { eventID = EventTriggerType.PointerUp };
+        up.callback.AddListener(_ => onUp());
+
+        var exit = new EventTrigger.Entry { eventID = EventTriggerType.PointerExit };
+        exit.callback.AddListener(_ => onUp());
+
+        trigger.triggers.Add(down);
+        trigger.triggers.Add(up);
+        trigger.triggers.Add(exit);
+    }
+
+    // ────────────── 驾驶音效 ──────────────
+    private void SetupDriveAudio()
+    {
+        var sources = GetComponents<AudioSource>();
+        if (sources.Length >= 2)
+        {
+            _driveLoopSource = sources[0];
+            _driveOneShotSource = sources[1];
+            _driveLoopSource.loop = true;
+            _driveLoopSource.playOnAwake = false;
+            _driveOneShotSource.loop = false;
+            _driveOneShotSource.playOnAwake = false;
+        }
+
+        PlayEngineIdle();
+    }
+
+    private void PlayEngineIdle()
+    {
+        if (_driveLoopSource == null || engineIdleClip == null) return;
+        if (_driveLoopSource.clip == engineIdleClip && _driveLoopSource.isPlaying) return;
+        _driveLoopSource.clip = engineIdleClip;
+        _driveLoopSource.loop = true;
+        _driveLoopSource.Play();
+    }
+
+    private void StopDriveAudio()
+    {
+        if (_throttleCoroutine != null)
+        {
+            StopCoroutine(_throttleCoroutine);
+            _throttleCoroutine = null;
+        }
+        if (_driveLoopSource != null && _driveLoopSource.isPlaying)
+            _driveLoopSource.Stop();
+    }
+
+    private void OnMoveButtonDown()
+    {
+        _moveButtonHoldCount++;
+        if (_moveButtonHoldCount == 1)
+        {
+            if (_driveLoopSource != null && _driveLoopSource.isPlaying)
+                _driveLoopSource.Stop();
+
+            if (_throttleCoroutine != null)
+                StopCoroutine(_throttleCoroutine);
+            if (_driveOneShotSource != null && _driveOneShotSource.isPlaying)
+                _driveOneShotSource.Stop();
+
+            _throttleCoroutine = StartCoroutine(PlayThrottleThenDrive());
+        }
+    }
+
+    private void OnMoveButtonUp()
+    {
+        if (_moveButtonHoldCount <= 0) return;
+        _moveButtonHoldCount--;
+        if (_moveButtonHoldCount == 0)
+        {
+            if (_driveLoopSource != null && _driveLoopSource.isPlaying)
+                _driveLoopSource.Stop();
+            PlayEngineIdle();
+        }
+    }
+
+    private IEnumerator PlayThrottleThenDrive()
+    {
+        AudioClip throttle = null;
+        if (throttleClips != null && throttleClips.Length > 0)
+            throttle = throttleClips[Random.Range(0, throttleClips.Length)];
+
+        if (throttle == null)
+        {
+            _throttleCoroutine = null;
+            StartDrivingLoop();
+            yield break;
+        }
+
+        _driveOneShotSource.clip = throttle;
+        _driveOneShotSource.Play();
+
+        yield return new WaitForSeconds(0.15f);
+
+        _throttleCoroutine = null;
+        StartDrivingLoop();
+    }
+
+    private void StartDrivingLoop()
+    {
+        if (_moveButtonHoldCount > 0 && drivingClip != null)
+        {
+            _driveLoopSource.clip = drivingClip;
+            _driveLoopSource.loop = true;
+            _driveLoopSource.Play();
+        }
+    }
+
+    private void BindResourceDots()
+    {
+        if (dotsParent == null) return;
+
+        HideAllResourceDotPool();
+
+        for (int i = 0; i < _resources.Count; i++)
+        {
+            var node = _resources[i];
+
+            Transform rangeTransform = dotsParent.Find($"Range_{i}");
+            Transform dotTransform = dotsParent.Find($"Dot_{i}");
+            if (rangeTransform == null || dotTransform == null)
+            {
+                Debug.LogError($"MapGridGame 雷达回波池缺少 Range_{i} 或 Dot_{i}。请在 RadarDots 下预建足够数量的回波对象。", this);
+                continue;
+            }
+
+            var rangeRt = rangeTransform.GetComponent<RectTransform>();
+            var rangeImg = rangeTransform.GetComponent<Image>();
+            var dotRt = dotTransform.GetComponent<RectTransform>();
+            var dotImg = dotTransform.GetComponent<Image>();
+
+            if (rangeRt == null || rangeImg == null || dotRt == null || dotImg == null)
+            {
+                Debug.LogError($"MapGridGame 雷达回波池对象 Range_{i}/Dot_{i} 缺少 RectTransform 或 Image。", this);
+                continue;
+            }
+
+            rangeImg.sprite = _ringSprite;
+            rangeImg.color = new Color(MaterialDotColors[node.materialId].r,
+                                        MaterialDotColors[node.materialId].g,
+                                        MaterialDotColors[node.materialId].b, 0f);
+            rangeImg.raycastTarget = false;
+            rangeImg.enabled = false;
+            node.rangeImage = rangeImg;
+            node.rangeRt = rangeRt;
+
+            dotImg.sprite = _circleSprite;
+            dotImg.color = new Color(MaterialDotColors[node.materialId].r,
+                                      MaterialDotColors[node.materialId].g,
+                                      MaterialDotColors[node.materialId].b, 0f);
+            dotImg.raycastTarget = false;
+            dotImg.enabled = false;
+            node.dotImage = dotImg;
+            node.dotRt = dotRt;
+        }
+    }
+
+    private void HideAllResourceDotPool()
+    {
+        for (int i = 0; i < dotsParent.childCount; i++)
+        {
+            Transform child = dotsParent.GetChild(i);
+            Image image = child.GetComponent<Image>();
+            if (image != null)
+                image.enabled = false;
+        }
+    }
+
+    // ────────────── 场景切换 ──────────────
+    private void SwitchScene()
+    {
+        if (sceneLoaderButton != null)
+            sceneLoaderButton.LoadTargetScene();
+    }
+
+    // ────────────── 钻探流程 ──────────────
+    private void HandleDrillButtonDown()
+    {
+        if (_drillEnded) return;
+
+        if (!_isDrilling)
+        {
+            if (_currentResource == null) return;
+            StartDrillingCurrentResource();
+        }
+
+        if (drillController != null)
+            drillController.OnButtonPressed();
+    }
+
+    private void HandleDrillButtonUp()
+    {
+        if (drillController != null)
+            drillController.OnButtonReleased();
+    }
+
+    private void StartDrillingCurrentResource()
+    {
+        if (_currentResource == null)
+            return;
+
+        _holdForward = false;
+        _holdBackward = false;
+        _holdLeft = false;
+        _holdRight = false;
+        _moveButtonHoldCount = 0;
+
+        if (_throttleCoroutine != null)
+        {
+            StopCoroutine(_throttleCoroutine);
+            _throttleCoroutine = null;
+        }
+        if (_driveLoopSource != null && _driveLoopSource.isPlaying && _driveLoopSource.clip != engineIdleClip)
+            _driveLoopSource.Stop();
+        PlayEngineIdle();
+
+        SetRadarControlsEnabled(false);
+        if (drillPanel != null)
+            drillPanel.SetActive(true);
+
+        if (drillController != null)
+            drillController.BeginDrill(
+                _currentResource.materialId,
+                OnDrillSuccess,
+                OnDrillFailure
+            );
+
+        _isDrilling = true;
+    }
+
+    private void OnDrillSuccess()
+    {
+        if (_currentResource != null)
+            CompleteCollect(_currentResource);
+        _drillEnded = true;
+        if (drillButton) drillButton.interactable = false;
+        StartCoroutine(ReturnToRadarAfterDelay(2f));
+    }
+
+    private void OnDrillFailure()
+    {
+        _drillEnded = true;
+        if (drillButton) drillButton.interactable = false;
+        StartCoroutine(ReturnToRadarAfterDelay(2f));
+    }
+
+    private void CompleteCollect(ResourceNode node)
+    {
+        int matId = node.materialId;
+        _inventory[matId] = _inventory.ContainsKey(matId) ? _inventory[matId] + 1 : 1;
+
+        node.collected = true;
+        node.echoAlpha = 0f;
+        node.dotImage.enabled = false;
+        node.rangeImage.enabled = false;
+
+        if (_currentResource == node)
+            _currentResource = null;
+
+        RefreshDisplay();
+    }
+
+    private IEnumerator ReturnToRadarAfterDelay(float delay)
+    {
+        yield return new WaitForSeconds(delay);
+        if (drillPanel != null)
+            drillPanel.SetActive(false);
+        _isDrilling = false;
+        _drillEnded = false;
+        SetRadarControlsEnabled(true);
+        PlayEngineIdle();
+    }
+
+    private void SetRadarControlsEnabled(bool enabled)
+    {
+        if (forwardButton) forwardButton.interactable = enabled;
+        if (backwardButton) backwardButton.interactable = enabled;
+        if (leftButton) leftButton.interactable = enabled;
+        if (rightButton) rightButton.interactable = enabled;
+    }
+
+    // ────────────── 工具方法 ──────────────
+    private static Vector2 Rotate(Vector2 v, float angleDeg)
+    {
+        float rad = angleDeg * Mathf.Deg2Rad;
+        float cos = Mathf.Cos(rad);
+        float sin = Mathf.Sin(rad);
+        return new Vector2(
+            v.x * cos - v.y * sin,
+            v.x * sin + v.y * cos
+        );
+    }
+
+    private bool IsInsideScanSector(Vector2 localPos)
+    {
+        float pointAngle = Mathf.Atan2(localPos.y, localPos.x) * Mathf.Rad2Deg;
+        if (pointAngle < 0f) pointAngle += 360f;
+
+        float centerAngle = _scanAngle + scanSweepAngle * 0.5f;
+        return Mathf.Abs(Mathf.DeltaAngle(centerAngle, pointAngle)) <= scanSweepAngle * 0.5f;
+    }
+
+    // ────────────── 显示刷新 ──────────────
+    private void RefreshDisplay()
+    {
+        float radarAngle = _playerAngle;
+        float maxDist = _radarRadius - dotSize * 0.5f;
+
+        _currentResource = null;
+
+        foreach (var node in _resources)
+        {
+            if (node.collected)
+                continue;
+
+            if (node.dotImage == null || node.rangeImage == null || node.dotRt == null || node.rangeRt == null)
+                continue;
+
+            Vector2 relative = node.worldPos - _playerWorldPos;
+            Vector2 localPos = Rotate(relative, radarAngle) * _radarScale;
+
+            bool inRadar = localPos.magnitude <= maxDist;
+            if (!inRadar)
+            {
+                node.echoAlpha = 0f;
+                node.dotImage.enabled = false;
+                node.rangeImage.enabled = false;
+                continue;
+            }
+
+            bool scanned = IsInsideScanSector(localPos);
+
+            if (scanned)
+                node.echoAlpha = 1f;
+
+            node.echoAlpha = Mathf.MoveTowards(node.echoAlpha, 0f, echoFadeOutSpeed * Time.deltaTime);
+
+            bool showEcho = node.echoAlpha > 0.01f;
+            node.dotImage.enabled = showEcho;
+            node.rangeImage.enabled = showEcho;
+
+            node.dotRt.anchoredPosition = localPos;
+            node.rangeRt.anchoredPosition = localPos;
+
+            float rangeSize = node.collectRadius * 2f * _radarScale;
+            node.rangeRt.sizeDelta = new Vector2(rangeSize, rangeSize);
+
+            Color baseColor = MaterialDotColors[node.materialId];
+            Color dotColor = baseColor;
+            dotColor.a = node.echoAlpha;
+            node.dotImage.color = dotColor;
+
+            Color rangeColor = baseColor;
+            rangeColor.a = 0.25f * node.echoAlpha;
+            node.rangeImage.color = rangeColor;
+
+            float dist = Vector2.Distance(_playerWorldPos, node.worldPos);
+            if (dist <= node.collectRadius && _currentResource == null)
+                _currentResource = node;
+        }
+
+        // 位置显示
+        float compassAngle = _playerAngle % 360f;
+        if (compassAngle < 0f) compassAngle += 360f;
+        string compass = GetCompassDirection(compassAngle);
+        if (positionText)
+            positionText.text = $"真实坐标: ({_playerWorldPos.x:F1}, {_playerWorldPos.y:F1})  朝向: {compass} ({compassAngle:F0}°)";
+
+        // 背包显示
+        if (inventoryText)
+        {
+            if (_inventory.Count == 0)
+            {
+                inventoryText.text = "背包: 空";
+            }
+            else
+            {
+                var parts = new List<string>();
+                foreach (var kv in _inventory)
+                    parts.Add($"{MaterialNames[kv.Key]}×{kv.Value}");
+                inventoryText.text = "背包: " + string.Join(", ", parts);
+            }
+        }
+
+        // 钻头按钮状态
+        if (!_isDrilling)
+        {
+            bool canCollect = _currentResource != null;
+            if (drillButton)
+                drillButton.interactable = canCollect;
+            if (drillBtnText)
+            {
+                drillBtnText.color = canCollect ? Color.white : new Color(0.5f, 0.5f, 0.5f);
+
+                if (canCollect)
+                    drillBtnText.text = $"伸出钻头\n{MaterialNames[_currentResource.materialId]}";
+                else
+                    drillBtnText.text = "伸出钻头\n按钮";
+            }
+        }
+    }
+
+    private static string GetCompassDirection(float angle)
+    {
+        if (angle < 22.5f || angle >= 337.5f) return "↑北";
+        if (angle < 67.5f) return "↗东北";
+        if (angle < 112.5f) return "→东";
+        if (angle < 157.5f) return "↘东南";
+        if (angle < 202.5f) return "↓南";
+        if (angle < 247.5f) return "↙西南";
+        if (angle < 292.5f) return "←西";
+        return "↖西北";
+    }
+
+}

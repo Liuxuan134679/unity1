@@ -1,0 +1,125 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.UI;
+
+public class CabinetPager : MonoBehaviour
+{
+    [Header("Pages")]
+    public RectTransform currentPage;
+    public RectTransform nextPage;
+
+    [Header("Button")]
+    [SerializeField] private Button nextButton;
+
+    [Header("Settings")]
+    public float slideDuration = 0.35f;
+    public int pageSize = 5;
+
+    [Header("Data")]
+    [SerializeField] private ExhibitConfig exhibitConfig;
+
+    private int currentPageIndex = 0;
+    private bool isAnimating = false;
+    private float pageWidth;
+
+    private void Start()
+    {
+        pageWidth = ((RectTransform)currentPage.parent).rect.width;
+
+        if (nextButton != null)
+            nextButton.onClick.AddListener(OnNextButtonClick);
+
+        BuildPage(currentPage, currentPageIndex);
+
+        nextPage.gameObject.SetActive(false);
+    }
+
+    public void OnNextButtonClick()
+    {
+        if (isAnimating) return;
+
+        int itemCount = GetItemCount();
+        int maxPage = Mathf.CeilToInt(itemCount / (float)pageSize);
+        if (maxPage <= 1) return;
+
+        int targetPage = currentPageIndex + 1;
+
+        if (targetPage >= maxPage)
+            targetPage = 0;
+
+        StartCoroutine(SlideToPage(targetPage));
+    }
+
+    private IEnumerator SlideToPage(int targetPageIndex)
+    {
+        isAnimating = true;
+
+        BuildPage(nextPage, targetPageIndex);
+
+        currentPage.anchoredPosition = Vector2.zero;
+        nextPage.anchoredPosition = new Vector2(pageWidth, 0);
+
+        nextPage.gameObject.SetActive(true);
+
+        float timer = 0f;
+
+        while (timer < slideDuration)
+        {
+            timer += Time.deltaTime;
+            float t = Mathf.Clamp01(timer / slideDuration);
+            float smoothT = Mathf.SmoothStep(0f, 1f, t);
+
+            currentPage.anchoredPosition = new Vector2(
+                Mathf.Lerp(0, -pageWidth, smoothT), 0);
+
+            nextPage.anchoredPosition = new Vector2(
+                Mathf.Lerp(pageWidth, 0, smoothT), 0);
+
+            yield return null;
+        }
+
+        currentPage.anchoredPosition = new Vector2(-pageWidth, 0);
+        nextPage.anchoredPosition = Vector2.zero;
+
+        currentPageIndex = targetPageIndex;
+
+        RectTransform temp = currentPage;
+        currentPage = nextPage;
+        nextPage = temp;
+
+        nextPage.gameObject.SetActive(false);
+        nextPage.anchoredPosition = Vector2.zero;
+
+        isAnimating = false;
+    }
+
+    private int GetItemCount()
+    {
+        return exhibitConfig != null && exhibitConfig.exhibits != null
+            ? exhibitConfig.exhibits.Count
+            : 0;
+    }
+
+    private void BuildPage(RectTransform pageRoot, int pageIndex)
+    {
+        ItemSlotUI[] slots = pageRoot.GetComponentsInChildren<ItemSlotUI>(true);
+
+        int itemCount = GetItemCount();
+
+        for (int i = 0; i < slots.Length; i++)
+        {
+            int itemIndex = pageIndex * pageSize + i;
+
+            if (itemIndex < itemCount)
+            {
+                var exhibit = exhibitConfig.exhibits[itemIndex];
+                slots[i].SetItem(exhibit.icon, exhibit.color, exhibit.name);
+            }
+            else
+            {
+                slots[i].Clear();
+            }
+        }
+    }
+}

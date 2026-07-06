@@ -1,0 +1,165 @@
+using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.EventSystems;
+
+public class ExhibitDetailPanel : MonoBehaviour, IPointerClickHandler
+{
+    private const float MaskAlpha = 0.6f;
+    private const float ImageMaxSize = 400f;
+    private const float DescMaxWidth = 480f;
+    private const float SpacingImageToName = 20f;
+    private const float SpacingNameToDesc = 16f;
+
+    private static ExhibitDetailPanel instance;
+
+    private Image maskImage;
+    private RectTransform contentRoot;
+    private Image exhibitImage;
+    private Text exhibitNameText;
+    private Text exhibitDescText;
+
+    private static ExhibitDetailPanel EnsureInstance()
+    {
+        if (instance != null) return instance;
+
+        var go = new GameObject("ExhibitDetailPanel");
+        DontDestroyOnLoad(go);
+        instance = go.AddComponent<ExhibitDetailPanel>();
+        instance.BuildUI();
+        instance.Close();
+        return instance;
+    }
+
+    private void BuildUI()
+    {
+        var canvas = gameObject.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        canvas.sortingOrder = 10000;
+
+        gameObject.AddComponent<CanvasScaler>();
+        gameObject.AddComponent<GraphicRaycaster>();
+
+        // Full-screen semi-transparent black mask (click to close)
+        maskImage = gameObject.AddComponent<Image>();
+        maskImage.color = new Color(0, 0, 0, MaskAlpha);
+        maskImage.raycastTarget = true;
+
+        var maskRT = (RectTransform)maskImage.transform;
+        maskRT.anchorMin = Vector2.zero;
+        maskRT.anchorMax = Vector2.one;
+        maskRT.offsetMin = Vector2.zero;
+        maskRT.offsetMax = Vector2.zero;
+
+        // Content root — centered, auto-sized by VerticalLayoutGroup
+        contentRoot = new GameObject("Content").AddComponent<RectTransform>();
+        contentRoot.SetParent(transform, false);
+        contentRoot.anchorMin = new Vector2(0.5f, 0.5f);
+        contentRoot.anchorMax = new Vector2(0.5f, 0.5f);
+        contentRoot.pivot = new Vector2(0.5f, 0.5f);
+        contentRoot.anchoredPosition = Vector2.zero;
+
+        var vlg = contentRoot.gameObject.AddComponent<VerticalLayoutGroup>();
+        vlg.childAlignment = TextAnchor.UpperCenter;
+        vlg.spacing = SpacingImageToName;
+        vlg.childControlWidth = true;
+        vlg.childControlHeight = true;
+        vlg.childForceExpandWidth = false;
+        vlg.childForceExpandHeight = false;
+
+        var fitter = contentRoot.gameObject.AddComponent<ContentSizeFitter>();
+        fitter.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
+        fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+        // Exhibit image
+        var imgGo = new GameObject("ExhibitImage");
+        imgGo.transform.SetParent(contentRoot, false);
+        exhibitImage = imgGo.AddComponent<Image>();
+        exhibitImage.preserveAspect = true;
+        exhibitImage.raycastTarget = false;
+        var imgLayout = imgGo.AddComponent<LayoutElement>();
+        imgLayout.preferredWidth = ImageMaxSize;
+        imgLayout.preferredHeight = ImageMaxSize;
+        imgLayout.flexibleWidth = 0;
+        imgLayout.flexibleHeight = 0;
+
+        // Name text
+        var nameGo = new GameObject("ExhibitName");
+        nameGo.transform.SetParent(contentRoot, false);
+        exhibitNameText = nameGo.AddComponent<Text>();
+        exhibitNameText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        exhibitNameText.fontSize = 32;
+        exhibitNameText.alignment = TextAnchor.MiddleCenter;
+        exhibitNameText.color = Color.white;
+        exhibitNameText.raycastTarget = false;
+        exhibitNameText.horizontalOverflow = HorizontalWrapMode.Wrap;
+        exhibitNameText.verticalOverflow = VerticalWrapMode.Overflow;
+        var nameLayout = nameGo.AddComponent<LayoutElement>();
+        nameLayout.preferredWidth = DescMaxWidth;
+        nameLayout.flexibleWidth = 0;
+        nameLayout.minHeight = 0;
+
+        // Description text
+        var descGo = new GameObject("ExhibitDesc");
+        descGo.transform.SetParent(contentRoot, false);
+        exhibitDescText = descGo.AddComponent<Text>();
+        exhibitDescText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        exhibitDescText.fontSize = 22;
+        exhibitDescText.alignment = TextAnchor.MiddleCenter;
+        exhibitDescText.color = new Color(0.85f, 0.85f, 0.85f);
+        exhibitDescText.raycastTarget = false;
+        exhibitDescText.horizontalOverflow = HorizontalWrapMode.Wrap;
+        exhibitDescText.verticalOverflow = VerticalWrapMode.Overflow;
+        var descLayout = descGo.AddComponent<LayoutElement>();
+        descLayout.preferredWidth = DescMaxWidth;
+        descLayout.flexibleWidth = 0;
+        descLayout.minHeight = 0;
+    }
+
+    public static void Show(ExhibitData data)
+    {
+        if (data == null) return;
+
+        var panel = EnsureInstance();
+        panel.ShowInternal(data);
+    }
+
+    private void ShowInternal(ExhibitData data)
+    {
+        if (data.icon != null)
+        {
+            exhibitImage.sprite = data.icon;
+            exhibitImage.color = data.color;
+            exhibitImage.gameObject.SetActive(true);
+
+            float spriteW = data.icon.rect.width;
+            float spriteH = data.icon.rect.height;
+            float scale = Mathf.Min(ImageMaxSize / spriteW, ImageMaxSize / spriteH, 1f);
+            float w = spriteW * scale;
+            float h = spriteH * scale;
+
+            var imgLayout = exhibitImage.GetComponent<LayoutElement>();
+            imgLayout.preferredWidth = w;
+            imgLayout.preferredHeight = h;
+        }
+        else
+        {
+            exhibitImage.gameObject.SetActive(false);
+        }
+
+        exhibitNameText.text = data.name;
+        exhibitDescText.text = string.IsNullOrEmpty(data.description) ? "" : data.description;
+
+        LayoutRebuilder.ForceRebuildLayoutImmediate(contentRoot);
+        gameObject.SetActive(true);
+    }
+
+    public void Close()
+    {
+        gameObject.SetActive(false);
+    }
+
+    public void OnPointerClick(PointerEventData eventData)
+    {
+        Close();
+    }
+}

@@ -1,0 +1,559 @@
+using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.EventSystems;
+
+public class DrillController : MonoBehaviour
+{
+    [System.Serializable]
+    public struct DepthZone
+    {
+        public string name;
+        public Material material;
+        public float heatIncreaseRate;
+        [Range(0, 100)]
+        public float suitablePowerMin;
+        [Range(0, 100)]
+        public float suitablePowerMax;
+    }
+
+    [Header("钻头设置")]
+    public float maxHeat = 100f;
+
+    [Header("生成深度范围")]
+    [Tooltip("每次钻探生成的总深度最小值")]
+    public float genMinDepth = 1000f;
+    [Tooltip("每次钻探生成的总深度最大值")]
+    public float genMaxDepth = 2000f;
+
+    [Header("功率设置")]
+    public float powerIncreaseRate = 8f;
+    public float powerDecreaseRate = 40f;
+    [Tooltip("越小惯性越大")]
+    public float powerInertia = 3f;
+
+    [Header("钻探速度")]
+    public float drillSpeed = 10f;
+
+    [Header("过热设置")]
+    [Tooltip("偏离适宜区间时过热指数增长")]
+    public float heatPowerExponent = 2.5f;
+    [Tooltip("低于适宜区间时的过热增速倍率")]
+    public float belowRangeHeatMultiplier = 1.5f;
+    [Tooltip("高于适宜区间时的过热增速倍率")]
+    public float aboveRangeHeatMultiplier = 3f;
+    public float baseCoolingRate = 5f;
+    [Tooltip("高温区散热效率降低 (0=不降温, 1=无惩罚)")]
+    public float highHeatCoolingPenalty = 0.6f;
+
+    [Header("音效")]
+    public AudioClip lowPowerSFX;
+    public AudioClip normalPowerSFX;
+    public AudioClip highPowerSFX;
+    [Tooltip("音效切换交叉淡化时长")]
+    public float crossfadeDuration = 0.5f;
+    public AudioClip loadUpItemSFX;
+    private AudioSource _sfxSource;
+
+    [Header("深度材质分层")]
+    public DepthZone[] depthZones;
+
+    [Header("UI引用")]
+    public Button drillButton;
+    public GameObject ledGreen;
+    public GameObject ledRed;
+    public Text depthText;
+    public Text powerText;
+    public Text heatText;
+    public Text statusText;
+    public Text materialText;
+    public Image powerBarFill;
+    public Image heatBarFill;
+    public Image powerBarRangeOverlay;
+
+    [Header("存档引用")]
+    [Tooltip("玩家存档管理器，用于挖掘成功时奖励展览品")]
+    public PlayerSaveManager saveManager;
+
+    public enum DrillState { Idle, Drilling, Success, Failure }
+
+    public event System.Action OnDrillSuccess;
+    public event System.Action OnDrillFailure;
+
+    private DrillState state = DrillState.Idle;
+    private bool isButtonPressed;
+    private float currentDepth;
+    private float currentPower;
+    private float currentHeat;
+    private float powerVelocity;
+    private int currentZoneIndex;
+    private MeshRenderer drillRenderer;
+    private float[] zoneEndDepths;
+    private float targetDepth;
+    private System.Action _onSuccess;
+    private System.Action _onFailure;
+    private bool _callbackFired;
+
+    private AudioSource activeSource;
+    private AudioSource inactiveSource;
+    private bool isCrossfading;
+    private enum PowerAudioState { None, Low, Normal, High }
+    private PowerAudioState currentAudioState = PowerAudioState.None;
+
+    private Button _ledButton;
+
+    void Start()
+    {
+        drillRenderer = GetComponent<MeshRenderer>();
+
+        if (ledGreen != null)
+            _ledButton = ledGreen.GetComponentInParent<Button>();
+        if (_ledButton == null && ledRed != null)
+            _ledButton = ledRed.GetComponentInParent<Button>();
+
+        var sources = GetComponents<AudioSource>();
+        if (sources.Length >= 2)
+        {
+            activeSource = sources[0];
+            inactiveSource = sources[1];
+            activeSource.volume = 0f;
+            inactiveSource.volume = 0f;
+        }
+
+        _sfxSource = gameObject.AddComponent<AudioSource>();
+        _sfxSource.loop = false;
+        _sfxSource.playOnAwake = false;
+
+        GenerateZones();
+        currentZoneIndex = 0;
+        ApplyZoneMaterial();
+        UpdateUI();
+    }
+
+    /// <summary>
+    /// 外部调用：开始一次钻探会话。重置所有状态并生成新的地层。
+    /// </summary>
+    public void BeginDrill(int materialId, System.Action onSuccess, System.Action onFailure)
+    {
+        _onSuccess = onSuccess;
+        _onFailure = onFailure;
+        _callbackFired = false;
+
+        currentDepth = 0f;
+        currentPower = 0f;
+        currentHeat = 0f;
+        powerVelocity = 0f;
+        currentZoneIndex = 0;
+        isButtonPressed = false;
+
+        GenerateZones();
+        ApplyZoneMaterial();
+
+        state = DrillState.Idle;
+
+        if (statusText != null)
+        {
+            statusText.text = "准备钻探";
+            statusText.color = Color.white;
+        }
+
+        UpdateUI();
+    }
+
+    private void FireCallback(bool success)
+    {
+        if (_callbackFired) return;
+        _callbackFired = true;
+        if (success)
+        {
+            OnDrillSuccess?.Invoke();
+            _onSuccess?.Invoke();
+            saveManager?.TryRewardRandomExhibit();
+            if (loadUpItemSFX != null && _sfxSource != null)
+            {
+                _sfxSource.Stop();
+                _sfxSource.clip = loadUpItemSFX;
+                _sfxSource.Play();
+            }
+        }
+        else
+        {
+            OnDrillFailure?.Invoke();
+            _onFailure?.Invoke();
+        }
+    }
+
+    void GenerateZones()
+    {
+        if (depthZones == null || depthZones.Length == 0)
+        {
+            zoneEndDepths = new float[0];
+            targetDepth = 0f;
+            return;
+        }
+
+        targetDepth = Random.Range(genMinDepth, genMaxDepth);
+
+        // 随机权重分配总深度到各层
+        float[] weights = new float[depthZones.Length];
+        float totalWeight = 0f;
+        for (int i = 0; i < depthZones.Length; i++)
+        {
+            weights[i] = Random.value;
+            totalWeight += weights[i];
+        }
+
+        zoneEndDepths = new float[depthZones.Length];
+        float cumulative = 0f;
+        for (int i = 0; i < depthZones.Length; i++)
+        {
+            cumulative += targetDepth * weights[i] / totalWeight;
+            zoneEndDepths[i] = cumulative;
+        }
+
+        // 修正最后一层末尾确保等于 targetDepth
+        zoneEndDepths[depthZones.Length - 1] = targetDepth;
+    }
+
+    void Update()
+    {
+        if (state == DrillState.Drilling)
+        {
+            // --- 功率：按住缓慢上升，松开快速下降，带惯性 ---
+            float targetVel = isButtonPressed ? powerIncreaseRate : -powerDecreaseRate;
+            powerVelocity = Mathf.Lerp(powerVelocity, targetVel, powerInertia * Time.deltaTime);
+            currentPower = Mathf.Clamp(currentPower + powerVelocity * Time.deltaTime, 0f, 100f);
+
+            // --- 钻探速度：固定 ---
+            currentDepth += drillSpeed * Time.deltaTime;
+
+            // --- 过热：适宜区间内不升温，低于区间升慢，高于区间升快 ---
+            float zoneMin, zoneMax;
+            GetSuitableRange(out zoneMin, out zoneMax);
+
+            if (currentPower >= zoneMin && currentPower <= zoneMax)
+            {
+                // 适宜区间：过热值不上升
+            }
+            else
+            {
+                float distFromRange;
+                float multiplier;
+                if (currentPower < zoneMin)
+                {
+                    distFromRange = zoneMin > 0 ? (zoneMin - currentPower) / zoneMin : 1f;
+                    multiplier = belowRangeHeatMultiplier;
+                }
+                else
+                {
+                    distFromRange = zoneMax < 100f ? (currentPower - zoneMax) / (100f - zoneMax) : 1f;
+                    multiplier = aboveRangeHeatMultiplier;
+                }
+
+                float zoneHeatRate = GetCurrentHeatRate();
+                currentHeat = Mathf.Min(
+                    currentHeat + zoneHeatRate * multiplier *
+                    Mathf.Pow(distFromRange, heatPowerExponent) * Time.deltaTime,
+                    maxHeat);
+            }
+
+            // 松开后功率归零 → 回到 Idle
+            if (!isButtonPressed && currentPower <= 0f)
+            {
+                state = DrillState.Idle;
+                powerVelocity = 0f;
+                StopDrillAudio();
+                if (statusText != null)
+                {
+                    statusText.text = "已停止，准备钻探";
+                    statusText.color = Color.white;
+                }
+            }
+
+            UpdateDrillAudio(zoneMin, zoneMax);
+
+            UpdateZone();
+
+            if (currentHeat >= maxHeat)
+            {
+                state = DrillState.Failure;
+                isButtonPressed = false;
+                StopDrillAudio();
+                if (statusText != null)
+                {
+                    statusText.text = "钻探失败：过热！";
+                    statusText.color = Color.red;
+                }
+                FireCallback(false);
+            }
+            else if (currentDepth >= targetDepth)
+            {
+                state = DrillState.Success;
+                isButtonPressed = false;
+                StopDrillAudio();
+                if (statusText != null)
+                {
+                    statusText.text = "钻探成功！到达目标深度！";
+                    statusText.color = Color.green;
+                }
+                FireCallback(true);
+            }
+        }
+        else if (state == DrillState.Idle)
+        {
+            float heat01 = currentHeat / maxHeat;
+            float coolingEfficiency = Mathf.Lerp(1f, 1f - highHeatCoolingPenalty, heat01);
+            currentHeat = Mathf.Max(
+                currentHeat - baseCoolingRate * coolingEfficiency * Time.deltaTime, 0f);
+        }
+        else if (state == DrillState.Success)
+        {
+            powerVelocity = Mathf.Lerp(powerVelocity, -powerDecreaseRate, powerInertia * Time.deltaTime);
+            currentPower = Mathf.Clamp(currentPower + powerVelocity * Time.deltaTime, 0f, 100f);
+        }
+
+        UpdateUI();
+    }
+
+    void GetSuitableRange(out float min, out float max)
+    {
+        if (depthZones != null && depthZones.Length > 0 && currentZoneIndex < depthZones.Length)
+        {
+            min = depthZones[currentZoneIndex].suitablePowerMin;
+            max = depthZones[currentZoneIndex].suitablePowerMax;
+        }
+        else
+        {
+            min = 0f;
+            max = 100f;
+        }
+    }
+
+    float GetCurrentHeatRate()
+    {
+        if (depthZones != null && depthZones.Length > 0 && currentZoneIndex < depthZones.Length)
+            return depthZones[currentZoneIndex].heatIncreaseRate;
+        return 5f;
+    }
+
+    void UpdateZone()
+    {
+        if (zoneEndDepths == null || zoneEndDepths.Length == 0)
+            return;
+
+        int newIndex = currentZoneIndex;
+        for (int i = 0; i < zoneEndDepths.Length; i++)
+        {
+            if (currentDepth < zoneEndDepths[i])
+            {
+                newIndex = i;
+                break;
+            }
+            newIndex = i;
+        }
+
+        if (newIndex != currentZoneIndex)
+        {
+            currentZoneIndex = newIndex;
+            ApplyZoneMaterial();
+        }
+    }
+
+    void ApplyZoneMaterial()
+    {
+        if (drillRenderer != null && depthZones != null && depthZones.Length > 0 && currentZoneIndex < depthZones.Length)
+        {
+            var mat = depthZones[currentZoneIndex].material;
+            if (mat != null)
+                drillRenderer.sharedMaterial = mat;
+        }
+        UpdateRangeOverlay();
+    }
+
+    void UpdateRangeOverlay()
+    {
+        if (powerBarRangeOverlay == null)
+            return;
+
+        float zoneMin, zoneMax;
+        GetSuitableRange(out zoneMin, out zoneMax);
+
+        var rt = powerBarRangeOverlay.rectTransform;
+        rt.anchorMin = new Vector2(0, zoneMin / 100f);
+        rt.anchorMax = new Vector2(1, zoneMax / 100f);
+        rt.offsetMin = Vector2.zero;
+        rt.offsetMax = Vector2.zero;
+    }
+
+    void UpdateDrillAudio(float zoneMin, float zoneMax)
+    {
+        if (activeSource == null)
+            return;
+
+        if (currentPower <= 0f)
+        {
+            StopDrillAudio();
+            return;
+        }
+
+        PowerAudioState targetState;
+        if (currentPower < zoneMin)
+            targetState = PowerAudioState.Low;
+        else if (currentPower > zoneMax)
+            targetState = PowerAudioState.High;
+        else
+            targetState = PowerAudioState.Normal;
+
+        if (targetState == currentAudioState)
+            return;
+
+        currentAudioState = targetState;
+        AudioClip clip = null;
+        switch (targetState)
+        {
+            case PowerAudioState.Low: clip = lowPowerSFX; break;
+            case PowerAudioState.Normal: clip = normalPowerSFX; break;
+            case PowerAudioState.High: clip = highPowerSFX; break;
+        }
+
+        if (clip != null)
+            StartCoroutine(CrossfadeTo(clip));
+    }
+
+    System.Collections.IEnumerator CrossfadeTo(AudioClip newClip)
+    {
+        if (isCrossfading)
+        {
+            isCrossfading = false;
+            StopCoroutine("CrossfadeTo");
+        }
+
+        isCrossfading = true;
+
+        var oldSource = activeSource;
+        var newSource = inactiveSource;
+        newSource.clip = newClip;
+        newSource.Play();
+
+        float elapsed = 0f;
+        while (elapsed < crossfadeDuration && isCrossfading)
+        {
+            elapsed += Time.deltaTime;
+            float t = elapsed / crossfadeDuration;
+            oldSource.volume = Mathf.Lerp(1f, 0f, t);
+            newSource.volume = Mathf.Lerp(0f, 1f, t);
+            yield return null;
+        }
+
+        if (isCrossfading)
+        {
+            oldSource.volume = 0f;
+            newSource.volume = 1f;
+            oldSource.Stop();
+
+            activeSource = newSource;
+            inactiveSource = oldSource;
+            isCrossfading = false;
+        }
+    }
+
+    void StopDrillAudio()
+    {
+        if (isCrossfading)
+        {
+            isCrossfading = false;
+            StopCoroutine("CrossfadeTo");
+        }
+
+        if (activeSource != null && activeSource.isPlaying)
+        {
+            StartCoroutine(FadeOutAndStop(activeSource));
+        }
+        if (inactiveSource != null && inactiveSource.isPlaying)
+        {
+            inactiveSource.Stop();
+            inactiveSource.volume = 0f;
+        }
+        currentAudioState = PowerAudioState.None;
+    }
+
+    System.Collections.IEnumerator FadeOutAndStop(AudioSource source)
+    {
+        float startVol = source.volume;
+        float elapsed = 0f;
+        while (elapsed < crossfadeDuration)
+        {
+            elapsed += Time.deltaTime;
+            source.volume = Mathf.Lerp(startVol, 0f, elapsed / crossfadeDuration);
+            yield return null;
+        }
+        source.Stop();
+        source.volume = 0f;
+    }
+
+    public void OnButtonPressed()
+    {
+        if (state == DrillState.Success || state == DrillState.Failure)
+        {
+            state = DrillState.Idle;
+            currentDepth = 0f;
+            currentPower = 0f;
+            currentHeat = 0f;
+            powerVelocity = 0f;
+            currentZoneIndex = 0;
+            GenerateZones();
+            ApplyZoneMaterial();
+            StopDrillAudio();
+            _callbackFired = false;
+            if (statusText != null)
+            {
+                statusText.text = "已重置，准备钻探";
+                statusText.color = Color.white;
+            }
+            return;
+        }
+
+        if (state == DrillState.Idle)
+        {
+            state = DrillState.Drilling;
+            if (statusText != null)
+            {
+                statusText.text = "钻探中...";
+                statusText.color = Color.yellow;
+            }
+        }
+
+        isButtonPressed = true;
+    }
+
+    public void OnButtonReleased()
+    {
+        isButtonPressed = false;
+    }
+
+    void UpdateUI()
+    {
+        if (depthText != null)
+            depthText.text = $"深度: {currentDepth:F1} / {targetDepth:F0} m";
+        if (powerText != null)
+            powerText.text = $"{currentPower:F0}%";
+        if (heatText != null)
+            heatText.text = $"{currentHeat:F0}%";
+        if (materialText != null)
+        {
+            if (depthZones != null && depthZones.Length > 0 && currentZoneIndex < depthZones.Length)
+                materialText.text = $"当前地层: {depthZones[currentZoneIndex].name}";
+            else
+                materialText.text = "当前地层: 未知";
+        }
+        if (powerBarFill != null)
+            powerBarFill.fillAmount = currentPower / 100f;
+        if (heatBarFill != null)
+            heatBarFill.fillAmount = currentHeat / maxHeat;
+
+        bool interactable = _ledButton != null && _ledButton.interactable;
+        if (ledGreen != null && ledGreen.activeSelf != interactable)
+            ledGreen.SetActive(interactable);
+        if (ledRed != null && ledRed.activeSelf != !interactable)
+            ledRed.SetActive(!interactable);
+    }
+}

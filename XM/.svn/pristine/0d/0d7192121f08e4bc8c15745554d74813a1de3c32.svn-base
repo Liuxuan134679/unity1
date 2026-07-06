@@ -1,0 +1,756 @@
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.EventSystems;
+
+/// <summary>
+/// 雷达视图地图游戏：主角用连续世界坐标移动/旋转，物资点和采集范围根据主角位置与角度反向投影到雷达上。
+/// 全部UI由代码程序化构建，无需手动在Inspector中搭建。
+/// </summary>
+public class MapGridGame : MonoBehaviour
+{
+    // ────────────── 配置 ──────────────
+    [Header("地图配置")]
+    [Tooltip("地图宽度（世界单位）")]
+    public int mapWidth = 24;
+    [Tooltip("地图高度（世界单位）")]
+    public int mapHeight = 24;
+    [Tooltip("物资点最少数量")]
+    public int minMaterials = 5;
+    [Tooltip("物资点最多数量")]
+    public int maxMaterials = 15;
+    [Tooltip("物资点最小间距")]
+    public float minSpawnDistance = 3f;
+
+    [Header("驾驶配置")]
+    [Tooltip("移动速度（世界单位/秒）")]
+    public float moveSpeed = 5f;
+    [Tooltip("转向速度（度/秒）")]
+    public float turnSpeed = 100f;
+
+    [Header("雷达配置")]
+    [Tooltip("雷达直径（像素）")]
+    public float radarSize = 600f;
+    [Tooltip("物资点直径（像素）")]
+    public float dotSize = 16f;
+    [Tooltip("扫描线旋转速度（度/秒）")]
+    public float scanSpeed = 50f;
+    [Tooltip("扫描扇形角度（度）")]
+    public float scanSweepAngle = 55f;
+    [Tooltip("回波渐显速度")]
+    public float echoFadeInSpeed = 10f;
+    [Tooltip("回波渐隐速度")]
+    public float echoFadeOutSpeed = 2.5f;
+
+    // ────────────── 物资定义 ──────────────
+    // ID=0 表示空地；1~6 为不同物资
+    private static readonly string[] MaterialNames =
+        { "", "铁矿", "铜矿", "金矿", "钻石", "石油", "煤炭" };
+
+    private static readonly Color[] MaterialDotColors =
+    {
+        Color.clear,                      // 0 空（不使用）
+        new Color(0.72f, 0.50f, 0.28f),  // 1 铁矿 棕色
+        new Color(0.95f, 0.55f, 0.18f),  // 2 铜矿 橙色
+        new Color(1.00f, 0.85f, 0.10f),  // 3 金矿 黄色
+        new Color(0.10f, 0.88f, 0.92f),  // 4 钻石 青色
+        new Color(0.75f, 0.18f, 0.18f),  // 5 石油 深红
+        new Color(0.42f, 0.42f, 0.42f),  // 6 煤炭 深灰
+    };
+
+    // ────────────── 资源节点 ──────────────
+    private class ResourceNode
+    {
+        public Vector2 worldPos;
+        public int materialId;
+        public float collectRadius;
+        public bool collected;
+        public Image dotImage;
+        public Image rangeImage;
+        public RectTransform dotRt;
+        public RectTransform rangeRt;
+        public float echoAlpha;
+    }
+    private readonly List<ResourceNode> _resources = new List<ResourceNode>();
+    private ResourceNode _currentResource;
+
+    // ────────────── 玩家状态 ──────────────
+    private Vector2 _playerWorldPos;
+    private float _playerAngle; // 0度表示朝上
+
+    // ────────────── 长按输入状态 ──────────────
+    private bool _holdForward;
+    private bool _holdBackward;
+    private bool _holdLeft;
+    private bool _holdRight;
+
+    private readonly Dictionary<int, int> _inventory = new Dictionary<int, int>();
+
+    // ────────────── 雷达UI ──────────────
+    private RectTransform _scanLine;
+    private float _scanAngle;
+    private float _radarScale;
+    private float _radarRadius;
+    private Sprite _circleSprite;
+    private Sprite _ringSprite;
+    private Sprite _scanSprite;
+
+    // ────────────── 其他UI引用 ──────────────
+    private Button _drillButton;
+    private Text _drillBtnText;
+    private Text _inventoryText;
+    private Text _positionText;
+
+    // ────────────── 生命周期 ──────────────
+    private void Start()
+    {
+        GenerateMap();
+        GenerateSprites();
+        BuildUI();
+        RefreshDisplay();
+    }
+
+    private void Update()
+    {
+        _scanAngle = Mathf.Repeat(_scanAngle - scanSpeed * Time.deltaTime, 360f);
+        if (_scanLine != null)
+            _scanLine.localEulerAngles = new Vector3(0f, 0f, _scanAngle);
+
+        if (_holdLeft)
+            _playerAngle -= turnSpeed * Time.deltaTime;
+        if (_holdRight)
+            _playerAngle += turnSpeed * Time.deltaTime;
+
+        Vector2 forward = GetForward(_playerAngle);
+
+        if (_holdForward)
+            _playerWorldPos += forward * moveSpeed * Time.deltaTime;
+        if (_holdBackward)
+            _playerWorldPos -= forward * moveSpeed * Time.deltaTime;
+
+        _playerWorldPos.x = Mathf.Clamp(_playerWorldPos.x, 0f, mapWidth);
+        _playerWorldPos.y = Mathf.Clamp(_playerWorldPos.y, 0f, mapHeight);
+
+        RefreshDisplay();
+    }
+
+    private static Vector2 GetForward(float angle)
+    {
+        float rad = angle * Mathf.Deg2Rad;
+        return new Vector2(Mathf.Sin(rad), Mathf.Cos(rad));
+    }
+
+    // ────────────── 地图生成 ──────────────
+    private void GenerateMap()
+    {
+        _playerWorldPos = new Vector2(mapWidth / 2f, mapHeight / 2f);
+        _playerAngle = 0f;
+
+        int targetCount = Random.Range(minMaterials, maxMaterials + 1);
+        int maxAttempts = targetCount * 30;
+
+        for (int i = 0; i < targetCount; i++)
+        {
+            Vector2 pos = Vector2.zero;
+            bool found = false;
+
+            for (int attempt = 0; attempt < maxAttempts; attempt++)
+            {
+                pos = new Vector2(
+                    Random.Range(0f, mapWidth),
+                    Random.Range(0f, mapHeight)
+                );
+
+                bool tooClose = false;
+                foreach (var existing in _resources)
+                {
+                    if (Vector2.Distance(pos, existing.worldPos) < minSpawnDistance)
+                    {
+                        tooClose = true;
+                        break;
+                    }
+                }
+
+                if (!tooClose)
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+                continue;
+
+            var node = new ResourceNode
+            {
+                worldPos = pos,
+                materialId = Random.Range(1, MaterialNames.Length),
+                collectRadius = 1.0f,
+                collected = false
+            };
+            _resources.Add(node);
+        }
+    }
+
+    // ────────────── 精灵生成 ──────────────
+    private void GenerateSprites()
+    {
+        _radarRadius = radarSize / 2f;
+        _radarScale = _radarRadius * 1.8f / Mathf.Max(mapWidth, mapHeight);
+
+        _circleSprite = MakeCircleSprite(256);
+        _ringSprite = MakeRingSprite(256, 2);
+        _scanSprite = MakeScanSectorSprite(256, scanSweepAngle);
+    }
+
+    private Sprite MakeCircleSprite(int size)
+    {
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        tex.filterMode = FilterMode.Bilinear;
+        float c = size / 2f;
+        float r = c - 1f;
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                float dx = x + 0.5f - c;
+                float dy = y + 0.5f - c;
+                float dist = Mathf.Sqrt(dx * dx + dy * dy);
+                if (dist <= r - 1f)
+                    tex.SetPixel(x, y, Color.white);
+                else if (dist <= r)
+                {
+                    float a = r - dist;
+                    tex.SetPixel(x, y, new Color(1f, 1f, 1f, a));
+                }
+                else
+                    tex.SetPixel(x, y, new Color(0, 0, 0, 0));
+            }
+        }
+        tex.Apply();
+        return Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f));
+    }
+
+    private Sprite MakeRingSprite(int size, int thickness)
+    {
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        tex.filterMode = FilterMode.Bilinear;
+        float c = size / 2f;
+        float rOuter = c - 1f;
+        float rInner = rOuter - thickness;
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                float dx = x + 0.5f - c;
+                float dy = y + 0.5f - c;
+                float dist = Mathf.Sqrt(dx * dx + dy * dy);
+                bool onRing = dist <= rOuter && dist >= rInner;
+                tex.SetPixel(x, y, onRing ? Color.white : new Color(0, 0, 0, 0));
+            }
+        }
+        tex.Apply();
+        return Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f));
+    }
+
+    private Sprite MakeScanSectorSprite(int size, float sweepDeg)
+    {
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        tex.filterMode = FilterMode.Bilinear;
+        float c = size / 2f;
+        float r = c - 1f;
+        float sweepRad = sweepDeg * Mathf.Deg2Rad;
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                float dx = x + 0.5f - c;
+                float dy = y + 0.5f - c;
+                float dist = Mathf.Sqrt(dx * dx + dy * dy);
+                if (dist > r)
+                {
+                    tex.SetPixel(x, y, new Color(0, 0, 0, 0));
+                    continue;
+                }
+                float angle = Mathf.Atan2(dy, dx);
+                if (angle < 0) angle += Mathf.PI * 2f;
+                if (angle <= sweepRad)
+                {
+                    float t = angle / sweepRad; // 0=leading edge, 1=trailing
+                    float a = (1f - t) * 0.45f;
+                    tex.SetPixel(x, y, new Color(1f, 1f, 1f, a));
+                }
+                else
+                {
+                    tex.SetPixel(x, y, new Color(0, 0, 0, 0));
+                }
+            }
+        }
+        tex.Apply();
+        return Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f));
+    }
+
+    // ────────────── UI构建 ──────────────
+    private void BuildUI()
+    {
+        // ── Canvas ──
+        var canvasGo = new GameObject("MapGameCanvas");
+        var canvas = canvasGo.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        canvasGo.AddComponent<CanvasScaler>().uiScaleMode =
+            CanvasScaler.ScaleMode.ScaleWithScreenSize;
+        var scaler = canvasGo.GetComponent<CanvasScaler>();
+        scaler.referenceResolution = new Vector2(1080, 1920);
+        scaler.matchWidthOrHeight = 0.5f;
+        canvasGo.AddComponent<GraphicRaycaster>();
+
+        // EventSystem
+        if (Object.FindObjectOfType<EventSystem>() == null)
+        {
+            var esGo = new GameObject("EventSystem");
+            esGo.AddComponent<EventSystem>();
+            esGo.AddComponent<StandaloneInputModule>();
+        }
+
+        // ── 根背景 ──
+        var bgGo = CreateUIObject("Background", canvasGo.transform);
+        var bgImg = bgGo.AddComponent<Image>();
+        bgImg.color = new Color(0.10f, 0.11f, 0.13f);
+        SetStretch(bgGo.GetComponent<RectTransform>());
+
+        // ── 顶部信息栏 ──
+        var topBar = CreateUIObject("TopBar", bgGo.transform);
+        var topRt = topBar.GetComponent<RectTransform>();
+        topRt.anchorMin = new Vector2(0, 1);
+        topRt.anchorMax = new Vector2(1, 1);
+        topRt.pivot = new Vector2(0.5f, 1f);
+        topRt.offsetMin = new Vector2(20, -130);
+        topRt.offsetMax = new Vector2(-20, -20);
+        var topBarImg = topBar.AddComponent<Image>();
+        topBarImg.color = new Color(0.15f, 0.16f, 0.18f);
+
+        var topLayout = topBar.AddComponent<VerticalLayoutGroup>();
+        topLayout.spacing = 6f;
+        topLayout.padding = new RectOffset(20, 20, 10, 10);
+        topLayout.childAlignment = TextAnchor.MiddleCenter;
+        topLayout.childControlWidth = true;
+        topLayout.childControlHeight = true;
+        topLayout.childForceExpandWidth = true;
+        topLayout.childForceExpandHeight = false;
+
+        _positionText = CreateText("PositionText", topBar.transform, "位置: (0, 0)", 28, Color.white);
+        _inventoryText = CreateText("InventoryText", topBar.transform, "背包: 空", 22, new Color(0.8f, 0.8f, 0.8f));
+
+        // ═══════════ 雷达面板 ═══════════
+        var radarPanel = CreateUIObject("RadarPanel", bgGo.transform);
+        var radarRt = radarPanel.GetComponent<RectTransform>();
+        radarRt.anchorMin = new Vector2(0.5f, 0.5f);
+        radarRt.anchorMax = new Vector2(0.5f, 0.5f);
+        radarRt.pivot = new Vector2(0.5f, 0.5f);
+        radarRt.sizeDelta = new Vector2(radarSize, radarSize);
+        radarRt.anchoredPosition = new Vector2(0, 80);
+
+        // 雷达背景圆盘
+        var radarBg = CreateUIObject("RadarBg", radarPanel.transform);
+        SetStretch(radarBg.GetComponent<RectTransform>());
+        var radarBgImg = radarBg.AddComponent<Image>();
+        radarBgImg.sprite = _circleSprite;
+        radarBgImg.color = new Color(0.03f, 0.07f, 0.05f);
+        radarBgImg.raycastTarget = false;
+
+        // 外圈边框
+        var outerRing = CreateUIObject("OuterRing", radarPanel.transform);
+        var outerRingRt = outerRing.GetComponent<RectTransform>();
+        SetCenteredRect(outerRingRt, radarSize, radarSize);
+        var outerRingImg = outerRing.AddComponent<Image>();
+        outerRingImg.sprite = _ringSprite;
+        outerRingImg.color = new Color(0.2f, 0.8f, 0.3f, 0.6f);
+        outerRingImg.raycastTarget = false;
+
+        // 同心圆 (2 inner rings)
+        for (int i = 1; i <= 2; i++)
+        {
+            var ringGo = CreateUIObject($"Ring{i}", radarPanel.transform);
+            float ringSize = radarSize * (i / 3f);
+            SetCenteredRect(ringGo.GetComponent<RectTransform>(), ringSize, ringSize);
+            var ringImg = ringGo.AddComponent<Image>();
+            ringImg.sprite = _ringSprite;
+            ringImg.color = new Color(0.15f, 0.6f, 0.2f, 0.3f);
+            ringImg.raycastTarget = false;
+        }
+
+        // 十字线 - 水平
+        var crossH = CreateUIObject("CrossH", radarPanel.transform);
+        SetCenteredRect(crossH.GetComponent<RectTransform>(), radarSize, 1.5f);
+        var crossHImg = crossH.AddComponent<Image>();
+        crossHImg.color = new Color(0.15f, 0.6f, 0.2f, 0.35f);
+        crossHImg.raycastTarget = false;
+
+        // 十字线 - 垂直
+        var crossV = CreateUIObject("CrossV", radarPanel.transform);
+        SetCenteredRect(crossV.GetComponent<RectTransform>(), 1.5f, radarSize);
+        var crossVImg = crossV.AddComponent<Image>();
+        crossVImg.color = new Color(0.15f, 0.6f, 0.2f, 0.35f);
+        crossVImg.raycastTarget = false;
+
+        // 扫描线（旋转扇形）
+        var scanGo = CreateUIObject("ScanLine", radarPanel.transform);
+        _scanLine = scanGo.GetComponent<RectTransform>();
+        SetCenteredRect(_scanLine, radarSize, radarSize);
+        var scanImg = scanGo.AddComponent<Image>();
+        scanImg.sprite = _scanSprite;
+        scanImg.color = new Color(0.1f, 0.9f, 0.2f);
+        scanImg.raycastTarget = false;
+
+        // 物资点容器（居中于雷达中心）
+        var dotsParent = CreateUIObject("RadarDots", radarPanel.transform);
+        var dotsRt = dotsParent.GetComponent<RectTransform>();
+        dotsRt.anchorMin = new Vector2(0.5f, 0.5f);
+        dotsRt.anchorMax = new Vector2(0.5f, 0.5f);
+        dotsRt.pivot = new Vector2(0.5f, 0.5f);
+        dotsRt.sizeDelta = Vector2.zero;
+
+        // 为每个资源节点创建采集范围圆 + 物资点
+        for (int i = 0; i < _resources.Count; i++)
+        {
+            var node = _resources[i];
+
+            // 采集范围圆（半透明环）
+            var rangeGo = CreateUIObject($"Range_{i}", dotsParent.transform);
+            var rangeRt = rangeGo.GetComponent<RectTransform>();
+            rangeRt.anchorMin = new Vector2(0.5f, 0.5f);
+            rangeRt.anchorMax = new Vector2(0.5f, 0.5f);
+            rangeRt.pivot = new Vector2(0.5f, 0.5f);
+            var rangeImg = rangeGo.AddComponent<Image>();
+            rangeImg.sprite = _ringSprite;
+            rangeImg.color = new Color(MaterialDotColors[node.materialId].r,
+                                        MaterialDotColors[node.materialId].g,
+                                        MaterialDotColors[node.materialId].b, 0f);
+            rangeImg.raycastTarget = false;
+            rangeImg.enabled = false;
+            node.rangeImage = rangeImg;
+            node.rangeRt = rangeRt;
+
+            // 物资点
+            var dotGo = CreateUIObject($"Dot_{i}", dotsParent.transform);
+            var dotRt = dotGo.GetComponent<RectTransform>();
+            dotRt.anchorMin = new Vector2(0.5f, 0.5f);
+            dotRt.anchorMax = new Vector2(0.5f, 0.5f);
+            dotRt.pivot = new Vector2(0.5f, 0.5f);
+            dotRt.sizeDelta = new Vector2(dotSize, dotSize);
+            var dotImg = dotGo.AddComponent<Image>();
+            dotImg.sprite = _circleSprite;
+            dotImg.color = new Color(MaterialDotColors[node.materialId].r,
+                                      MaterialDotColors[node.materialId].g,
+                                      MaterialDotColors[node.materialId].b, 0f);
+            dotImg.raycastTarget = false;
+            dotImg.enabled = false;
+            node.dotImage = dotImg;
+            node.dotRt = dotRt;
+        }
+
+        // 玩家标记（雷达中心，绿色圆点 + 朝向三角形）
+        var playerGo = CreateUIObject("PlayerMarker", radarPanel.transform);
+        SetCenteredRect(playerGo.GetComponent<RectTransform>(), dotSize + 6f, dotSize + 6f);
+        var playerImg = playerGo.AddComponent<Image>();
+        playerImg.sprite = _circleSprite;
+        playerImg.color = new Color(0.15f, 0.85f, 0.20f);
+        playerImg.raycastTarget = false;
+
+        // ═══════════ 底部控制面板 ═══════════
+        var ctrlPanel = CreateUIObject("ControlPanel", bgGo.transform);
+        var ctrlRt = ctrlPanel.GetComponent<RectTransform>();
+        ctrlRt.anchorMin = new Vector2(0, 0);
+        ctrlRt.anchorMax = new Vector2(1, 0);
+        ctrlRt.pivot = new Vector2(0.5f, 0f);
+        ctrlRt.offsetMin = new Vector2(20, 20);
+        ctrlRt.offsetMax = new Vector2(-20, 300);
+        var ctrlImg = ctrlPanel.AddComponent<Image>();
+        ctrlImg.color = new Color(0.15f, 0.16f, 0.18f);
+
+        // 左侧：方向按钮
+        var moveGroup = CreateUIObject("MoveGroup", ctrlPanel.transform);
+        var moveRt = moveGroup.GetComponent<RectTransform>();
+        moveRt.anchorMin = new Vector2(0, 0.5f);
+        moveRt.anchorMax = new Vector2(0, 0.5f);
+        moveRt.pivot = new Vector2(0, 0.5f);
+        moveRt.offsetMin = new Vector2(30, -130);
+        moveRt.offsetMax = new Vector2(290, 130);
+
+        var moveLayout = moveGroup.AddComponent<GridLayoutGroup>();
+        moveLayout.cellSize = new Vector2(80f, 80f);
+        moveLayout.spacing = Vector2.one * 8f;
+        moveLayout.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
+        moveLayout.constraintCount = 3;
+        moveLayout.childAlignment = TextAnchor.MiddleCenter;
+
+        // 方向按钮：空/前/空、左/后/右
+        CreateSpacer(moveGroup.transform);
+        CreateHoldButton(moveGroup.transform, "↑", "前",
+            () => _holdForward = true, () => _holdForward = false);
+        CreateSpacer(moveGroup.transform);
+        CreateHoldButton(moveGroup.transform, "↺", "左",
+            () => _holdLeft = true, () => _holdLeft = false);
+        CreateHoldButton(moveGroup.transform, "↓", "后",
+            () => _holdBackward = true, () => _holdBackward = false);
+        CreateHoldButton(moveGroup.transform, "↻", "右",
+            () => _holdRight = true, () => _holdRight = false);
+
+        // 右侧：钻头按钮
+        var drillGroup = CreateUIObject("DrillGroup", ctrlPanel.transform);
+        var drillRt = drillGroup.GetComponent<RectTransform>();
+        drillRt.anchorMin = new Vector2(1, 0.5f);
+        drillRt.anchorMax = new Vector2(1, 0.5f);
+        drillRt.pivot = new Vector2(1, 0.5f);
+        drillRt.offsetMin = new Vector2(-250, -60);
+        drillRt.offsetMax = new Vector2(-30, 60);
+
+        var drillGo = CreateUIObject("DrillButton", drillGroup.transform);
+        SetStretch(drillGo.GetComponent<RectTransform>());
+        var drillImg = drillGo.AddComponent<Image>();
+        drillImg.color = new Color(0.85f, 0.35f, 0.15f);
+
+        _drillButton = drillGo.AddComponent<Button>();
+        var dColors = _drillButton.colors;
+        dColors.highlightedColor = new Color(1.0f, 0.45f, 0.20f);
+        dColors.pressedColor = new Color(0.60f, 0.25f, 0.10f);
+        dColors.disabledColor = new Color(0.4f, 0.2f, 0.1f, 0.5f);
+        _drillButton.colors = dColors;
+
+        var drillTextGo = CreateUIObject("Text", drillGo.transform);
+        SetStretch(drillTextGo.GetComponent<RectTransform>());
+        _drillBtnText = drillTextGo.AddComponent<Text>();
+        _drillBtnText.text = "⛏ 钻头\n收集";
+        _drillBtnText.fontSize = 24;
+        _drillBtnText.color = Color.white;
+        _drillBtnText.alignment = TextAnchor.MiddleCenter;
+        _drillBtnText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        _drillBtnText.horizontalOverflow = HorizontalWrapMode.Overflow;
+        _drillBtnText.verticalOverflow = VerticalWrapMode.Overflow;
+
+        _drillButton.onClick.AddListener(CollectMaterial);
+    }
+
+    // ────────────── 采集逻辑 ──────────────
+    private void CollectMaterial()
+    {
+        if (_currentResource == null)
+            return;
+
+        int matId = _currentResource.materialId;
+        _inventory[matId] = _inventory.ContainsKey(matId) ? _inventory[matId] + 1 : 1;
+
+        _currentResource.collected = true;
+        _currentResource.echoAlpha = 0f;
+        _currentResource.dotImage.enabled = false;
+        _currentResource.rangeImage.enabled = false;
+        _currentResource = null;
+        RefreshDisplay();
+    }
+
+    private static Vector2 Rotate(Vector2 v, float angleDeg)
+    {
+        float rad = angleDeg * Mathf.Deg2Rad;
+        float cos = Mathf.Cos(rad);
+        float sin = Mathf.Sin(rad);
+        return new Vector2(
+            v.x * cos - v.y * sin,
+            v.x * sin + v.y * cos
+        );
+    }
+
+    private bool IsInsideScanSector(Vector2 localPos)
+    {
+        float pointAngle = Mathf.Atan2(localPos.y, localPos.x) * Mathf.Rad2Deg;
+        if (pointAngle < 0f) pointAngle += 360f;
+
+        float centerAngle = _scanAngle + scanSweepAngle * 0.5f;
+        return Mathf.Abs(Mathf.DeltaAngle(centerAngle, pointAngle)) <= scanSweepAngle * 0.5f;
+    }
+
+    // ────────────── 显示刷新 ──────────────
+    private void RefreshDisplay()
+    {
+        float radarAngle = _playerAngle;
+        float maxDist = _radarRadius - dotSize * 0.5f;
+
+        _currentResource = null;
+
+        foreach (var node in _resources)
+        {
+            if (node.collected)
+                continue;
+
+            Vector2 relative = node.worldPos - _playerWorldPos;
+            Vector2 localPos = Rotate(relative, radarAngle) * _radarScale;
+
+            bool inRadar = localPos.magnitude <= maxDist;
+            if (!inRadar)
+            {
+                node.echoAlpha = 0f;
+                node.dotImage.enabled = false;
+                node.rangeImage.enabled = false;
+                continue;
+            }
+
+            bool scanned = IsInsideScanSector(localPos);
+
+            if (scanned)
+                node.echoAlpha = 1f;
+
+            node.echoAlpha = Mathf.MoveTowards(node.echoAlpha, 0f, echoFadeOutSpeed * Time.deltaTime);
+
+            bool showEcho = node.echoAlpha > 0.01f;
+            node.dotImage.enabled = showEcho;
+            node.rangeImage.enabled = showEcho;
+
+            node.dotRt.anchoredPosition = localPos;
+            node.rangeRt.anchoredPosition = localPos;
+
+            float rangeSize = node.collectRadius * 2f * _radarScale;
+            node.rangeRt.sizeDelta = new Vector2(rangeSize, rangeSize);
+
+            Color baseColor = MaterialDotColors[node.materialId];
+            Color dotColor = baseColor;
+            dotColor.a = node.echoAlpha;
+            node.dotImage.color = dotColor;
+
+            Color rangeColor = baseColor;
+            rangeColor.a = 0.25f * node.echoAlpha;
+            node.rangeImage.color = rangeColor;
+
+            float dist = Vector2.Distance(_playerWorldPos, node.worldPos);
+            if (dist <= node.collectRadius && _currentResource == null)
+                _currentResource = node;
+        }
+
+        // 位置显示
+        float compassAngle = _playerAngle % 360f;
+        if (compassAngle < 0f) compassAngle += 360f;
+        string compass = GetCompassDirection(compassAngle);
+        _positionText.text = $"位置: ({_playerWorldPos.x:F1}, {_playerWorldPos.y:F1})  朝向: {compass} ({compassAngle:F0}°)";
+
+        // 背包显示
+        if (_inventory.Count == 0)
+        {
+            _inventoryText.text = "背包: 空";
+        }
+        else
+        {
+            var parts = new List<string>();
+            foreach (var kv in _inventory)
+                parts.Add($"{MaterialNames[kv.Key]}×{kv.Value}");
+            _inventoryText.text = "背包: " + string.Join(", ", parts);
+        }
+
+        // 钻头按钮状态
+        bool canCollect = _currentResource != null;
+        _drillButton.interactable = canCollect;
+        _drillBtnText.color = canCollect ? Color.white : new Color(0.5f, 0.5f, 0.5f);
+
+        if (canCollect)
+            _drillBtnText.text = $"⛏ 钻头\n收集{MaterialNames[_currentResource.materialId]}";
+        else
+            _drillBtnText.text = "⛏ 钻头\n收集";
+    }
+
+    private static string GetCompassDirection(float angle)
+    {
+        if (angle < 22.5f || angle >= 337.5f) return "↑北";
+        if (angle < 67.5f) return "↗东北";
+        if (angle < 112.5f) return "→东";
+        if (angle < 157.5f) return "↘东南";
+        if (angle < 202.5f) return "↓南";
+        if (angle < 247.5f) return "↙西南";
+        if (angle < 292.5f) return "←西";
+        return "↖西北";
+    }
+
+    // ────────────── UI工具方法 ──────────────
+    private GameObject CreateUIObject(string name, Transform parent)
+    {
+        var go = new GameObject(name, typeof(RectTransform));
+        go.transform.SetParent(parent, false);
+        return go;
+    }
+
+    private Text CreateText(string name, Transform parent, string content, int size, Color color)
+    {
+        var go = CreateUIObject(name, parent);
+        SetStretch(go.GetComponent<RectTransform>());
+        var txt = go.AddComponent<Text>();
+        txt.text = content;
+        txt.fontSize = size;
+        txt.color = color;
+        txt.alignment = TextAnchor.MiddleCenter;
+        txt.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        txt.horizontalOverflow = HorizontalWrapMode.Overflow;
+        txt.verticalOverflow = VerticalWrapMode.Overflow;
+        return txt;
+    }
+
+    private void CreateHoldButton(Transform parent, string arrow, string label,
+        UnityEngine.Events.UnityAction onDown, UnityEngine.Events.UnityAction onUp)
+    {
+        var go = CreateUIObject($"Btn_{label}", parent);
+        var img = go.AddComponent<Image>();
+        img.color = new Color(0.30f, 0.35f, 0.45f);
+
+        var btn = go.AddComponent<Button>();
+        var colors = btn.colors;
+        colors.highlightedColor = new Color(0.40f, 0.45f, 0.55f);
+        colors.pressedColor = new Color(0.20f, 0.25f, 0.35f);
+        btn.colors = colors;
+
+        var textGo = CreateUIObject("Text", go.transform);
+        SetStretch(textGo.GetComponent<RectTransform>());
+        var txt = textGo.AddComponent<Text>();
+        txt.text = $"{arrow}\n{label}";
+        txt.fontSize = 22;
+        txt.color = Color.white;
+        txt.alignment = TextAnchor.MiddleCenter;
+        txt.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        txt.horizontalOverflow = HorizontalWrapMode.Overflow;
+        txt.verticalOverflow = VerticalWrapMode.Overflow;
+
+        var trigger = go.AddComponent<EventTrigger>();
+
+        var down = new EventTrigger.Entry { eventID = EventTriggerType.PointerDown };
+        down.callback.AddListener(_ => onDown());
+
+        var up = new EventTrigger.Entry { eventID = EventTriggerType.PointerUp };
+        up.callback.AddListener(_ => onUp());
+
+        var exit = new EventTrigger.Entry { eventID = EventTriggerType.PointerExit };
+        exit.callback.AddListener(_ => onUp());
+
+        trigger.triggers.Add(down);
+        trigger.triggers.Add(up);
+        trigger.triggers.Add(exit);
+    }
+
+    private void CreateSpacer(Transform parent)
+    {
+        var go = CreateUIObject("Spacer", parent);
+        var img = go.AddComponent<Image>();
+        img.color = new Color(0, 0, 0, 0);
+    }
+
+    // ────────────── 布局工具 ──────────────
+    private static void SetStretch(RectTransform rt, Rect padding = default)
+    {
+        rt.anchorMin = Vector2.zero;
+        rt.anchorMax = Vector2.one;
+        rt.offsetMin = new Vector2(padding.xMin, padding.yMin);
+        rt.offsetMax = new Vector2(-padding.xMax, -padding.yMax);
+    }
+
+    private static void SetCenteredRect(RectTransform rt, float w, float h)
+    {
+        rt.anchorMin = new Vector2(0.5f, 0.5f);
+        rt.anchorMax = new Vector2(0.5f, 0.5f);
+        rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.sizeDelta = new Vector2(w, h);
+        rt.anchoredPosition = Vector2.zero;
+    }
+}

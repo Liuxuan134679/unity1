@@ -1,0 +1,229 @@
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+
+/// <summary>
+/// 博物馆管理器 —— 管理已获得的展示品并按主题放置到对应架子排上（2D版本）
+/// </summary>
+public class MuseumManager : MonoBehaviour
+{
+    [Header("配置")]
+    public ExhibitConfig exhibitConfig;
+
+    [Header("三排架子（按 ExhibitTheme 枚举顺序排列）")]
+    public Transform[] shelfRows = new Transform[3];
+
+    [Header("展示品显示参数")]
+    [Tooltip("展示品之间的间距")]
+    public float exhibitSpacing = 1.5f;
+    [Tooltip("展示品占位物体大小")]
+    public float exhibitSize = 0.5f;
+    [Tooltip("展示品在架子上的高度偏移")]
+    public float exhibitYOffset = 0.5f;
+    [Tooltip("名称标签相对于展示品的高度偏移")]
+    public float labelYOffset = 0.6f;
+
+    [Header("详情提示参数")]
+    [Tooltip("场景中的 TooltipCanvas 根节点（含 Canvas + TooltipPanel + TooltipText）")]
+    public GameObject tooltipCanvas;
+    [Tooltip("提示框相对鼠标的偏移（像素）")]
+    public Vector2 tooltipOffset = new Vector2(15f, -15f);
+    [Tooltip("提示框宽度（像素）")]
+    public float tooltipWidth = 360f;
+
+    // ────────────── 已获得的展示品列表 ──────────────
+    private List<ExhibitData> _obtainedExhibits = new List<ExhibitData>();
+
+    // 主题颜色
+    private static readonly Color[] ThemeColors =
+    {
+        new Color(0.85f, 0.65f, 0.3f),  // 古代文物 - 青铜色
+        new Color(0.3f, 0.7f, 0.4f),    // 自然标本 - 绿色
+        new Color(0.35f, 0.55f, 0.85f)  // 科技发明 - 蓝色
+    };
+
+    private static Sprite _whiteSprite;
+
+    // 展示品 Collider2D -> ExhibitData 查找表
+    private readonly Dictionary<Collider2D, ExhibitData> _exhibitLookup = new Dictionary<Collider2D, ExhibitData>();
+
+    // Tooltip UI 引用
+    private RectTransform _tooltipPanel;
+    private TextMeshProUGUI _tooltipText;
+    private Camera _mainCam;
+
+    static Sprite CreateWhiteSprite()
+    {
+        var tex = new Texture2D(4, 4);
+        var pixels = new Color[16];
+        for (int i = 0; i < 16; i++) pixels[i] = Color.white;
+        tex.SetPixels(pixels);
+        tex.Apply();
+        return Sprite.Create(tex, new Rect(0, 0, 4, 4), new Vector2(0.5f, 0.5f), 4f);
+    }
+
+    void Start()
+    {
+        if (_whiteSprite == null)
+            _whiteSprite = CreateWhiteSprite();
+
+        _mainCam = Camera.main;
+
+        InitializeExhibits();
+        DisplayExhibits();
+        InitTooltip();
+    }
+
+    /// <summary>
+    /// 初始化已获得的展示品 —— 暂时获取所有配置中的展示品
+    /// </summary>
+    void InitializeExhibits()
+    {
+        _obtainedExhibits.Clear();
+
+        if (exhibitConfig == null)
+        {
+            Debug.LogWarning("[博物馆] ExhibitConfig 未配置!");
+            return;
+        }
+
+        _obtainedExhibits.AddRange(exhibitConfig.exhibits);
+        Debug.Log($"[博物馆] 已获得展示品数量: {_obtainedExhibits.Count}");
+        foreach (var exhibit in _obtainedExhibits)
+        {
+            Debug.Log($"[博物馆] 展示品 #{exhibit.id} - {exhibit.name} ({exhibit.theme})\n  {exhibit.description}");
+        }
+    }
+
+    /// <summary>
+    /// 按主题将展示品放置到对应架子排上
+    /// </summary>
+    void DisplayExhibits()
+    {
+        if (exhibitConfig == null) return;
+
+        // 按主题分组
+        var groups = new List<ExhibitData>[3];
+        for (int i = 0; i < 3; i++)
+            groups[i] = new List<ExhibitData>();
+
+        foreach (var exhibit in _obtainedExhibits)
+        {
+            int themeIndex = (int)exhibit.theme;
+            if (themeIndex >= 0 && themeIndex < 3)
+                groups[themeIndex].Add(exhibit);
+        }
+
+        // 在每排架子上生成展示品
+        for (int i = 0; i < 3; i++)
+        {
+            if (shelfRows[i] == null) continue;
+
+            var group = groups[i];
+            int count = group.Count;
+            if (count == 0) continue;
+
+            float startX = -(count - 1) * exhibitSpacing * 0.5f;
+
+            for (int j = 0; j < count; j++)
+            {
+                var exhibit = group[j];
+                float x = startX + j * exhibitSpacing;
+
+                // 展示品占位物体（2D Sprite）
+                var go = new GameObject($"Exhibit_{exhibit.id}_{exhibit.name}");
+                go.transform.SetParent(shelfRows[i], false);
+                go.transform.localPosition = new Vector3(x, exhibitYOffset, 0f);
+                go.transform.localScale = Vector3.one * exhibitSize;
+
+                var sr = go.AddComponent<SpriteRenderer>();
+                sr.sprite = _whiteSprite;
+                sr.color = ThemeColors[i];
+
+                // 碰撞器用于鼠标检测
+                var collider = go.AddComponent<BoxCollider2D>();
+                _exhibitLookup[collider] = exhibit;
+
+                // 名称标签
+                var labelObj = new GameObject($"Label_{exhibit.name}");
+                labelObj.transform.SetParent(shelfRows[i], false);
+                labelObj.transform.localPosition = new Vector3(x, exhibitYOffset + labelYOffset, 0f);
+                var textMesh = labelObj.AddComponent<TextMesh>();
+                textMesh.text = exhibit.name;
+                textMesh.fontSize = 28;
+                textMesh.characterSize = 0.12f;
+                textMesh.anchor = TextAnchor.MiddleCenter;
+                textMesh.color = Color.white;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 从场景节点获取 Tooltip 引用
+    /// </summary>
+    void InitTooltip()
+    {
+        if (tooltipCanvas == null)
+        {
+            Debug.LogWarning("[博物馆] tooltipCanvas 未赋值!");
+            return;
+        }
+
+        _tooltipPanel = tooltipCanvas.transform.Find("TooltipPanel") as RectTransform;
+        if (_tooltipPanel == null)
+        {
+            Debug.LogError("[博物馆] TooltipPanel 未找到!");
+            return;
+        }
+
+        _tooltipText = _tooltipPanel.Find("TooltipText")?.GetComponent<TextMeshProUGUI>();
+        if (_tooltipText == null)
+        {
+            Debug.LogError("[博物馆] TooltipText 未找到!");
+            return;
+        }
+
+        tooltipCanvas.SetActive(false);
+    }
+
+    void Update()
+    {
+        if (_tooltipPanel == null || _mainCam == null) return;
+
+        Vector2 mouseWorld = _mainCam.ScreenToWorldPoint(Input.mousePosition);
+        var hit = Physics2D.Raycast(mouseWorld, Vector2.zero);
+
+        if (hit.collider != null && _exhibitLookup.TryGetValue(hit.collider, out var exhibit))
+        {
+            _tooltipText.text = $"<size=24><b>{exhibit.name}</b></size>\n{exhibit.description}";
+            _tooltipText.ForceMeshUpdate();
+
+            float preferredH = _tooltipText.preferredHeight + 20f;
+            _tooltipPanel.sizeDelta = new Vector2(tooltipWidth, preferredH);
+
+            if (!tooltipCanvas.activeSelf)
+                tooltipCanvas.SetActive(true);
+
+            Vector2 screenPos = Input.mousePosition + (Vector3)tooltipOffset;
+            float w = _tooltipPanel.rect.width;
+            float h = _tooltipPanel.rect.height;
+            if (screenPos.x + w > Screen.width) screenPos.x = Screen.width - w;
+            if (screenPos.y - h < 0) screenPos.y = h + tooltipOffset.y;
+            _tooltipPanel.position = screenPos;
+        }
+        else
+        {
+            if (tooltipCanvas.activeSelf)
+                tooltipCanvas.SetActive(false);
+        }
+    }
+
+    /// <summary>
+    /// 获取已获得的展示品列表
+    /// </summary>
+    public List<ExhibitData> GetObtainedExhibits()
+    {
+        return _obtainedExhibits;
+    }
+}

@@ -1,0 +1,75 @@
+using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.EventSystems;
+
+public class ItemSlotUI : MonoBehaviour, IPointerClickHandler
+{
+    public Image icon;
+    public Text label;
+
+    [SerializeField] private Sprite detailBackground;
+
+    public void SetDetailBackground(Sprite sprite)
+    {
+        detailBackground = sprite;
+    }
+
+    private ExhibitData exhibitData;
+
+    public void SetItem(ExhibitData data)
+    {
+        if (data == null)
+        {
+            Clear();
+            return;
+        }
+
+        exhibitData = data;
+
+        if (icon != null)
+        {
+            icon.gameObject.SetActive(true);
+            icon.sprite = data.icon;
+            icon.color = data.color;
+        }
+
+        if (label != null)
+        {
+            label.text = data.name;
+            label.gameObject.SetActive(!string.IsNullOrEmpty(data.name));
+        }
+    }
+
+    public void SetItem(Sprite sprite, Color color, string name = "")
+    {
+        if (icon == null) return;
+        icon.gameObject.SetActive(true);
+        icon.sprite = sprite;
+        icon.color = color;
+        if (label != null)
+        {
+            label.text = name;
+            label.gameObject.SetActive(!string.IsNullOrEmpty(name));
+        }
+    }
+
+    public void Clear()
+    {
+        exhibitData = null;
+        if (icon == null) return;
+        icon.sprite = null;
+        icon.color = Color.white;
+        icon.gameObject.SetActive(false);
+        if (label != null)
+        {
+            label.text = "";
+            label.gameObject.SetActive(false);
+        }
+    }
+
+    public void OnPointerClick(PointerEventData eventData)
+    {
+        if (exhibitData != null)
+            ExhibitDetailPanel.Show(exhibitData, detailBackground);
+    }
+}

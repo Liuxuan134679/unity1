@@ -1,0 +1,34 @@
+using UnityEngine;
+using UnityEngine.UI;
+
+public class ItemSlotUI : MonoBehaviour
+{
+    public Image icon;
+    public Text label;
+
+    public void SetItem(Sprite sprite, Color color, string name = "")
+    {
+        if (icon == null) return;
+        icon.gameObject.SetActive(true);
+        icon.sprite = sprite;
+        icon.color = color;
+        if (label != null)
+        {
+            label.text = name;
+            label.gameObject.SetActive(!string.IsNullOrEmpty(name));
+        }
+    }
+
+    public void Clear()
+    {
+        if (icon == null) return;
+        icon.sprite = null;
+        icon.color = Color.white;
+        icon.gameObject.SetActive(false);
+        if (label != null)
+        {
+            label.text = "";
+            label.gameObject.SetActive(false);
+        }
+    }
+}

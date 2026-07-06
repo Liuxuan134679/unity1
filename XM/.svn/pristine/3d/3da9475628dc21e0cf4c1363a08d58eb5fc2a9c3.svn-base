@@ -1,0 +1,95 @@
+[Licensing::Module] Trying to connect to existing licensing client channel...
+[Licensing::IpcConnector] Channel LicenseClient-宝贝 doesn't exist
+[Licensing::Module] Successfully launched the LicensingClient (PId: 83608)
+[Licensing::IpcConnector] Successfully connected to: "LicenseClient-宝贝" at "2026-07-04T06:07:59.2623874Z"
+[Licensing::Client] Code 10 while verifying Licensing Client signature (process Id: 83608, path: "D:/UNITY/2022.3.54f1c1/Editor/Data/Resources/Licensing/Client/Unity.Licensing.Client.exe")
+[Licensing::Module] LicensingClient has failed validation; ignoring
+[Licensing::Client] Handshaking with LicensingClient:
+  Version:                 1.16.1+e780b2e
+  Session Id:              a82fad55cb19440cae7674a5fbee440a
+  Correlation Id:          2191c708b93367cf55eaa209e454ee84
+  External correlation Id: 6970171184281937466
+  Machine Id:              tzvUfUNRmN+4MM1pxFXtbo1FDSk=
+[Licensing::Module] Successfully connected to LicensingClient on channel: "LicenseClient-宝贝" (connect: 2.91s, validation: 0.18s, handshake: 0.08s)
+[Licensing::IpcConnector] Successfully connected to: "LicenseClient-宝贝-notifications" at "2026-07-04T06:07:59.519377Z"
+[Licensing::Module] Connected to LicensingClient (PId: 83608, launch time: 0.03, total connection time: 3.16s)
+[Licensing::Module] Error: Access token is unavailable; failed to update
+[Licensing::Client] Successfully updated license
+Built from '2022.3/china_unity/release' branch; Version is '2022.3.54f1c1 (07d6d32a3816) revision 513747'; Using compiler version '192829333'; Build Type 'Release'
+OS: 'Windows 11  (10.0.26200) 64bit CoreCountrySpecific' Language: 'zh' Physical Memory: 31924 MB
+[Licensing::Client] Successfully resolved entitlement details
+[Licensing::Module] Serial number assigned to: "F4-KK7C-3RYS-KY9E-73T4-XXXX"
+BatchMode: 1, IsHumanControllingUs: 0, StartBugReporterOnCrash: 0, Is64bit: 1, IsPro: 0
+[Licensing::Client] Successfully resolved entitlement details
+
+COMMAND LINE ARGUMENTS:
+D:\UNITY\2022.3.54f1c1\Editor\Unity.exe
+-batchmode
+-projectPath
+D:\XM
+-quit
+-logFile
+D:\XM\MapGridGameUIBuild.log
+Successfully changed project path to: D:\XM
+D:/XM
+[UnityMemory] Configuration Parameters - Can be set up in boot.config
+    "memorysetup-bucket-allocator-granularity=16"
+    "memorysetup-bucket-allocator-bucket-count=8"
+    "memorysetup-bucket-allocator-block-size=33554432"
+    "memorysetup-bucket-allocator-block-count=8"
+    "memorysetup-main-allocator-block-size=16777216"
+    "memorysetup-thread-allocator-block-size=16777216"
+    "memorysetup-gfx-main-allocator-block-size=16777216"
+    "memorysetup-gfx-thread-allocator-block-size=16777216"
+    "memorysetup-cache-allocator-block-size=4194304"
+    "memorysetup-typetree-allocator-block-size=2097152"
+    "memorysetup-profiler-bucket-allocator-granularity=16"
+    "memorysetup-profiler-bucket-allocator-bucket-count=8"
+    "memorysetup-profiler-bucket-allocator-block-size=33554432"
+    "memorysetup-profiler-bucket-allocator-block-count=8"
+    "memorysetup-profiler-allocator-block-size=16777216"
+    "memorysetup-profiler-editor-allocator-block-size=1048576"
+    "memorysetup-temp-allocator-size-main=16777216"
+    "memorysetup-job-temp-allocator-block-size=2097152"
+    "memorysetup-job-temp-allocator-block-size-background=1048576"
+    "memorysetup-job-temp-allocator-reduction-small-platforms=262144"
+    "memorysetup-allocator-temp-initial-block-size-main=262144"
+    "memorysetup-allocator-temp-initial-block-size-worker=262144"
+    "memorysetup-temp-allocator-size-background-worker=32768"
+    "memorysetup-temp-allocator-size-job-worker=262144"
+    "memorysetup-temp-allocator-size-preload-manager=33554432"
+    "memorysetup-temp-allocator-size-nav-mesh-worker=65536"
+    "memorysetup-temp-allocator-size-audio-worker=65536"
+    "memorysetup-temp-allocator-size-cloud-worker=32768"
+    "memorysetup-temp-allocator-size-gi-baking-worker=262144"
+    "memorysetup-temp-allocator-size-gfx=262144"
+Player connection [84428]  Target information:
+
+Player connection [84428]  * "[IP] 10.118.227.238 [Port] 55505 [Flags] 2 [Guid] 117814598 [EditorId] 117814598 [Version] 1048832 [Id] WindowsEditor(7,LAPTOP-L75JKRUV) [Debug] 1 [PackageName] WindowsEditor [ProjectName] Editor" 
+
+Player connection [84428] Host joined multi-casting on [225.0.0.222:54997]...
+Player connection [84428] Host joined alternative multi-casting on [225.0.0.222:34997]...
+[PhysX] Initialized MultithreadedTaskDispatcher with 32 workers.
+[Package Manager] UpmClient::Connect -- Connected to IPC stream "Upm-90076" after 0.2 seconds.
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+ArtifactDBVersion changed from '0x01b4a447' to '0x5ce21767'
+Exiting after retrying 20 times because the 'Library/ArtifactDB' cannot be deleted.
+Exiting without the bug reporter. Application will terminate with return code 0

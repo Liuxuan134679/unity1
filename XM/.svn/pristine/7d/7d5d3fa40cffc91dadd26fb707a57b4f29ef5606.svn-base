@@ -1,0 +1,48 @@
+using UnityEngine;
+
+public class RecordBoardManager : MonoBehaviour
+{
+    [SerializeField] private ExhibitConfig exhibitConfig;
+    [SerializeField] private int startExhibitId = 16;
+    [SerializeField] private Sprite detailBackground;
+
+    private void Start()
+    {
+        if (exhibitConfig == null)
+        {
+            Debug.LogWarning("[RecordBoard] ExhibitConfig not assigned.");
+            return;
+        }
+
+        var slots = GetComponentsInChildren<ItemSlotUI>(true);
+
+        for (int i = 0; i < slots.Length; i++)
+        {
+            int targetId = startExhibitId + i;
+            ExhibitData match = null;
+
+            foreach (var exhibit in exhibitConfig.exhibits)
+            {
+                if (exhibit.id == targetId)
+                {
+                    match = exhibit;
+                    break;
+                }
+            }
+
+            if (match != null)
+            {
+                slots[i].SetItem(match);
+            }
+            else
+            {
+                slots[i].Clear();
+            }
+
+            if (detailBackground != null)
+            {
+                slots[i].SetDetailBackground(detailBackground);
+            }
+        }
+    }
+}
